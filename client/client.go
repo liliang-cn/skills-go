@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/liliang-cn/skills-go/mcp"
 	"github.com/liliang-cn/skills-go/renderer"
 	"github.com/liliang-cn/skills-go/skill"
 	"github.com/openai/openai-go/v3"
@@ -448,6 +452,180 @@ func (c *Client) ListScripts(skillName string) ([]skill.Script, error) {
 // SetScriptTimeout sets the timeout for script execution
 func (c *Client) SetScriptTimeout(timeout int) {
 	c.executor = skill.NewExecutor(skill.WithTimeout(duration(timeout)))
+}
+
+// MCP Support
+
+// mcpManager holds the MCP server manager (lazy initialized)
+type mcpManager struct {
+	manager *mcp.Manager
+}
+
+var (
+	mcpManagers      = make(map[string]*mcp.Manager)
+	mcpManagersMutex sync.RWMutex
+)
+
+// ConvertMCPServer converts an MCP server to a Skill
+func (c *Client) ConvertMCPServer(ctx context.Context, cfg *mcp.ServerConfig, outputDir string) (*skill.Skill, error) {
+	converter := mcp.NewConverter()
+	return converter.Convert(ctx, cfg, outputDir)
+}
+
+// ConvertMCPServerCommand converts a command-based MCP server to a Skill
+func (c *Client) ConvertMCPServerCommand(ctx context.Context, name string, command string, args ...string) (*skill.Skill, error) {
+	cfg := mcp.NewCommand(name, command, args...)
+	return c.ConvertMCPServer(ctx, cfg, c.config.SkillPaths[0])
+}
+
+// ConvertMCPServerHTTP converts an HTTP-based MCP server to a Skill
+func (c *Client) ConvertMCPServerHTTP(ctx context.Context, name string, url string) (*skill.Skill, error) {
+	cfg := mcp.NewHTTP(name, url)
+	return c.ConvertMCPServer(ctx, cfg, c.config.SkillPaths[0])
+}
+
+// DiscoverMCPServer discovers capabilities of an MCP server without converting
+func (c *Client) DiscoverMCPServer(ctx context.Context, cfg *mcp.ServerConfig) (*mcp.ServerCapabilities, error) {
+	converter := mcp.NewConverter()
+	return converter.Discover(ctx, cfg)
+}
+
+// ConvertMCPServerWithLLM converts an MCP server to a Skill using LLM for enhanced content
+func (c *Client) ConvertMCPServerWithLLM(ctx context.Context, cfg *mcp.ServerConfig, outputDir string) (*skill.Skill, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("LLM conversion requires an OpenAI client (provide APIKey or inject client)")
+	}
+	converter := mcp.NewConverter(mcp.WithLLMClient(c.client))
+	return converter.ConvertWithLLM(ctx, cfg, outputDir)
+}
+
+// ConvertMCPServerCommandWithLLM converts a command-based MCP server to a Skill using LLM
+func (c *Client) ConvertMCPServerCommandWithLLM(ctx context.Context, name string, command string, args ...string) (*skill.Skill, error) {
+	cfg := mcp.NewCommand(name, command, args...)
+	return c.ConvertMCPServerWithLLM(ctx, cfg, c.config.SkillPaths[0])
+}
+
+// ConvertMCPServerHTTPWithLLM converts an HTTP-based MCP server to a Skill using LLM
+func (c *Client) ConvertMCPServerHTTPWithLLM(ctx context.Context, name string, url string) (*skill.Skill, error) {
+	cfg := mcp.NewHTTP(name, url)
+	return c.ConvertMCPServerWithLLM(ctx, cfg, c.config.SkillPaths[0])
+}
+
+// MCPServerManager returns or creates an MCP manager for the client
+func (c *Client) MCPServerManager() *mcp.Manager {
+	mcpManagersMutex.Lock()
+	defer mcpManagersMutex.Unlock()
+
+	key := fmt.Sprintf("%p", c)
+	if mgr, exists := mcpManagers[key]; exists {
+		return mgr
+	}
+
+	mgr := mcp.NewManager()
+	mcpManagers[key] = mgr
+	return mgr
+}
+
+// ConnectMCPServer connects to an MCP server for runtime use
+func (c *Client) ConnectMCPServer(ctx context.Context, cfg *mcp.ServerConfig) (*mcp.MCPServer, error) {
+	return c.MCPServerManager().Connect(ctx, cfg)
+}
+
+// DisconnectMCPServer disconnects from an MCP server
+func (c *Client) DisconnectMCPServer(ctx context.Context, name string) error {
+	return c.MCPServerManager().Disconnect(ctx, name)
+}
+
+// DisconnectAllMCPServers disconnects all MCP servers
+func (c *Client) DisconnectAllMCPServers(ctx context.Context) error {
+	return c.MCPServerManager().DisconnectAll(ctx)
+}
+
+// GetMCPServer returns a connected MCP server by name
+func (c *Client) GetMCPServer(name string) (*mcp.MCPServer, bool) {
+	return c.MCPServerManager().GetServer(name)
+}
+
+// ListMCPServers returns all connected MCP server names
+func (c *Client) ListMCPServers() []string {
+	return c.MCPServerManager().ListServers()
+}
+
+// CallMCPTool calls a tool on a connected MCP server
+func (c *Client) CallMCPTool(ctx context.Context, serverName, toolName string, args map[string]any) (string, error) {
+	srv, ok := c.GetMCPServer(serverName)
+	if !ok {
+		return "", fmt.Errorf("MCP server %s not connected", serverName)
+	}
+
+	result, err := srv.CallTool(ctx, toolName, args)
+	if err != nil {
+		return "", err
+	}
+
+	if result.IsError {
+		return "", fmt.Errorf("tool error: %s", formatContent(result.Content))
+	}
+
+	return formatContent(result.Content), nil
+}
+
+// ReadMCPResource reads a resource from a connected MCP server
+func (c *Client) ReadMCPResource(ctx context.Context, serverName, uri string) (string, error) {
+	srv, ok := c.GetMCPServer(serverName)
+	if !ok {
+		return "", fmt.Errorf("MCP server %s not connected", serverName)
+	}
+
+	result, err := srv.ReadResource(ctx, uri)
+	if err != nil {
+		return "", err
+	}
+
+	var sb strings.Builder
+	for _, c := range result.Contents {
+		sb.WriteString(c.Text)
+	}
+	return sb.String(), nil
+}
+
+// GetMCPPrompt gets a prompt from a connected MCP server
+func (c *Client) GetMCPPrompt(ctx context.Context, serverName, promptName string, args map[string]string) (string, map[string]any, error) {
+	srv, ok := c.GetMCPServer(serverName)
+	if !ok {
+		return "", nil, fmt.Errorf("MCP server %s not connected", serverName)
+	}
+
+	result, err := srv.GetPrompt(ctx, promptName, args)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Build messages from result
+	var messages strings.Builder
+	var metadata = make(map[string]any)
+
+	for _, msg := range result.Messages {
+		if tc, ok := msg.Content.(*mcpsdk.TextContent); ok {
+			messages.WriteString(tc.Text)
+			messages.WriteString("\n")
+		}
+	}
+
+	metadata["name"] = promptName
+
+	return messages.String(), metadata, nil
+}
+
+// formatContent formats MCP content to a string
+func formatContent(content []mcpsdk.Content) string {
+	var sb strings.Builder
+	for _, c := range content {
+		if tc, ok := c.(*mcpsdk.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String()
 }
 
 func duration(seconds int) time.Duration {
