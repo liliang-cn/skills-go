@@ -6,12 +6,12 @@ import (
 
 func TestParseFrontmatter(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		expectedName   string
-		expectedDesc   string
+		name            string
+		input           string
+		expectedName    string
+		expectedDesc    string
 		expectedContent string
-		expectError    bool
+		expectError     bool
 	}{
 		{
 			name: "valid frontmatter with all fields",
@@ -21,8 +21,8 @@ description: A test skill
 user-invocable: true
 ---
 This is the content.`,
-			expectedName:   "test-skill",
-			expectedDesc:   "A test skill",
+			expectedName:    "test-skill",
+			expectedDesc:    "A test skill",
 			expectedContent: "This is the content.",
 		},
 		{
@@ -33,15 +33,15 @@ name: test-skill
 First paragraph.
 
 Second paragraph.`,
-			expectedName:   "test-skill",
-			expectedDesc:   "First paragraph.",
+			expectedName:    "test-skill",
+			expectedDesc:    "First paragraph.",
 			expectedContent: "First paragraph.\n\nSecond paragraph.",
 		},
 		{
-			name: "no frontmatter returns content as-is",
-			input: `Just content without frontmatter.`,
-			expectedName:   "",
-			expectedDesc:   "",
+			name:            "no frontmatter returns content as-is",
+			input:           `Just content without frontmatter.`,
+			expectedName:    "",
+			expectedDesc:    "",
 			expectedContent: "Just content without frontmatter.",
 		},
 		{
@@ -60,9 +60,89 @@ allowed-tools:
   - Write
 ---
 Content here.`,
-			expectedName:   "test",
-			expectedDesc:   "Content here.",
+			expectedName:    "test",
+			expectedDesc:    "Content here.",
 			expectedContent: "Content here.",
+		},
+		{
+			name: "frontmatter with comma-separated allowed-tools",
+			input: `---
+name: test
+allowed-tools: "Read, Write, Edit, Bash"
+---
+Content here.`,
+			expectedName:    "test",
+			expectedDesc:    "Content here.",
+			expectedContent: "Content here.",
+		},
+		{
+			name: "frontmatter with space-delimited allowed-tools (official spec)",
+			input: `---
+name: test
+allowed-tools: "Bash(git:*) Bash(jq:*) Read"
+---
+Content here.`,
+			expectedName:    "test",
+			expectedDesc:    "Content here.",
+			expectedContent: "Content here.",
+		},
+		{
+			name: "frontmatter with metadata field",
+			input: `---
+name: test
+metadata:
+  version: "1.0.0"
+  author: someone
+---
+Content.`,
+			expectedName:    "test",
+			expectedDesc:    "Content.",
+			expectedContent: "Content.",
+		},
+		{
+			name: "frontmatter with PreToolUse hooks",
+			input: `---
+name: test
+hooks:
+  PreToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: "echo test"
+---
+Content.`,
+			expectedName:    "test",
+			expectedDesc:    "Content.",
+			expectedContent: "Content.",
+		},
+		{
+			name: "frontmatter with metadata field",
+			input: `---
+name: test
+metadata:
+  version: "1.0.0"
+  author: someone
+---
+Content.`,
+			expectedName:    "test",
+			expectedDesc:    "Content.",
+			expectedContent: "Content.",
+		},
+		{
+			name: "frontmatter with PreToolUse hooks",
+			input: `---
+name: test
+hooks:
+  PreToolUse:
+    - matcher: "Write|Edit"
+      hooks:
+        - type: command
+          command: "echo test"
+---
+Content.`,
+			expectedName:    "test",
+			expectedDesc:    "Content.",
+			expectedContent: "Content.",
 		},
 		{
 			name: "empty content",
@@ -70,8 +150,8 @@ Content here.`,
 name: empty-skill
 ---
 `,
-			expectedName:   "empty-skill",
-			expectedDesc:   "",
+			expectedName:    "empty-skill",
+			expectedDesc:    "",
 			expectedContent: "",
 		},
 	}
@@ -119,7 +199,7 @@ func TestMarshalFrontmatter(t *testing.T) {
 				Name:        "test-skill",
 				Description: "A test skill",
 			},
-			content: "Skill content here.",
+			content:  "Skill content here.",
 			contains: []string{"name: test-skill", "description: A test skill", "Skill content here."},
 		},
 		{
@@ -128,7 +208,7 @@ func TestMarshalFrontmatter(t *testing.T) {
 				Name:         "test",
 				AllowedTools: []string{"Read", "Write", "Edit"},
 			},
-			content: "Content",
+			content:  "Content",
 			contains: []string{"- Read", "- Write", "- Edit"},
 		},
 	}
@@ -157,11 +237,11 @@ func TestMarshalFrontmatter(t *testing.T) {
 
 func TestParseArguments(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		expectedSkill   string
-		expectedArgs    []string
-		expectEmpty     bool
+		name          string
+		input         string
+		expectedSkill string
+		expectedArgs  []string
+		expectEmpty   bool
 	}{
 		{
 			name:          "valid skill invocation",
