@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"time"
 )
 
@@ -201,6 +202,15 @@ type InvocationContext struct {
 	IsUser      bool              `json:"is_user"` // true if invoked by user
 }
 
+// HandlerFunc is a Go function that can be used as a skill handler
+type HandlerFunc func(ctx context.Context, vars map[string]interface{}) (string, error)
+
+// HandlerSkill wraps a Go function as a skill
+type HandlerSkill struct {
+	Skill
+	Handler HandlerFunc
+}
+
 // InvocationResult is the result of skill invocation
 type InvocationResult struct {
 	Content    string            `json:"content"`
@@ -241,4 +251,43 @@ func (s *Skill) GetAgent() string {
 		return s.Meta.Agent
 	}
 	return "general-purpose"
+}
+
+// IsHandlerSkill returns true if this skill has a Go function handler
+func (s *Skill) IsHandlerSkill() bool {
+	return false
+}
+
+// GetHandler returns the handler function, nil if not a handler skill
+func (s *Skill) GetHandler() HandlerFunc {
+	return nil
+}
+
+// NewHandlerSkill creates a new skill with a Go function handler
+func NewHandlerSkill(name, description string, handler HandlerFunc) *HandlerSkill {
+	return &HandlerSkill{
+		Skill: Skill{
+			Name: name,
+			Meta: Meta{
+				Name:        name,
+				Description: description,
+			},
+		},
+		Handler: handler,
+	}
+}
+
+// IsHandlerSkill returns true for HandlerSkill
+func (h *HandlerSkill) IsHandlerSkill() bool {
+	return true
+}
+
+// GetHandler returns the handler function
+func (h *HandlerSkill) GetHandler() HandlerFunc {
+	return h.Handler
+}
+
+// ToSkill returns the underlying Skill
+func (h *HandlerSkill) ToSkill() *Skill {
+	return &h.Skill
 }

@@ -8,18 +8,20 @@ import (
 
 // Registry manages skill discovery and resolution
 type Registry struct {
-	loader  *Loader
-	skills  map[string]*Skill // by path
-	byName  map[string]*Skill // by name
-	mu      sync.RWMutex
+	loader   *Loader
+	skills   map[string]*Skill // by path
+	byName   map[string]*Skill // by name
+	handlers map[string]HandlerFunc // handler functions by name
+	mu       sync.RWMutex
 }
 
 // NewRegistry creates a new skill registry
 func NewRegistry(loader *Loader) *Registry {
 	return &Registry{
-		loader: loader,
-		skills: make(map[string]*Skill),
-		byName: make(map[string]*Skill),
+		loader:   loader,
+		skills:   make(map[string]*Skill),
+		byName:   make(map[string]*Skill),
+		handlers: make(map[string]HandlerFunc),
 	}
 }
 
@@ -162,6 +164,50 @@ func (r *Registry) Add(skill *Skill) {
 	r.byName[skill.Name] = skill
 }
 
+// RegisterFunction registers a Go function as a skill
+func (r *Registry) RegisterFunction(name, description string, handler HandlerFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Create a synthetic skill for the handler
+	skill := &Skill{
+		Name: name,
+		Meta: Meta{
+			Name:        name,
+			Description: description,
+		},
+	}
+
+	r.byName[name] = skill
+	r.handlers[name] = handler
+}
+
+// RegisterHandlerSkill registers a HandlerSkill
+func (r *Registry) RegisterHandlerSkill(h *HandlerSkill) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.byName[h.Name] = &h.Skill
+	r.handlers[h.Name] = h.Handler
+}
+
+// GetHandler returns the handler function for a skill, or nil if not a handler skill
+func (r *Registry) GetHandler(name string) HandlerFunc {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.handlers[name]
+}
+
+// IsHandlerSkill returns true if the skill has a registered handler function
+func (r *Registry) IsHandlerSkill(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	_, ok := r.handlers[name]
+	return ok
+}
+
 // Remove removes a skill from the registry
 func (r *Registry) Remove(skill *Skill) {
 	r.mu.Lock()
@@ -169,6 +215,7 @@ func (r *Registry) Remove(skill *Skill) {
 
 	delete(r.skills, skill.Path)
 	delete(r.byName, skill.Name)
+	delete(r.handlers, skill.Name)
 }
 
 // Clear clears all skills from the registry
@@ -178,6 +225,7 @@ func (r *Registry) Clear() {
 
 	r.skills = make(map[string]*Skill)
 	r.byName = make(map[string]*Skill)
+	r.handlers = make(map[string]HandlerFunc)
 }
 
 // Count returns the number of registered skills
