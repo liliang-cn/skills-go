@@ -20,9 +20,10 @@ const (
 // Skill represents a complete skill with metadata, content, and resources
 type Skill struct {
 	// Metadata
-	Meta Meta   `yaml:"frontmatter" json:"meta"`
-	Path string `json:"path"`
-	Name string `json:"name"`
+	Meta  Meta       `yaml:"frontmatter" json:"meta"`
+	Path  string     `json:"path"`
+	Name  string     `json:"name"`
+	Scope SkillScope `json:"scope,omitempty"`
 
 	// Content
 	Content string `json:"content"` // SKILL.md content without frontmatter
@@ -154,6 +155,19 @@ func trimSpace(s string) string {
 		end--
 	}
 	return s[start:end]
+}
+
+func effectiveLoadLevel(skill *Skill) LoadLevel {
+	if skill == nil {
+		return LoadLevelMetadata
+	}
+	if skill.Resources != nil {
+		return LoadLevelFull
+	}
+	if skill.Content != "" || skill.Raw != "" {
+		return LoadLevelContent
+	}
+	return skill.LoadLevel
 }
 
 // Resources contains additional skill resources

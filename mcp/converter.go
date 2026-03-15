@@ -34,9 +34,9 @@ type ServerConfig struct {
 
 // IncludeConfig controls what MCP capabilities to convert
 type IncludeConfig struct {
-	Tools    bool
+	Tools     bool
 	Resources bool
-	Prompts  bool
+	Prompts   bool
 }
 
 // DefaultInclude returns the default inclusion config
@@ -171,9 +171,9 @@ func (c *Converter) Convert(ctx context.Context, cfg *ServerConfig, outputDir st
 			Name:        skillName,
 			Description: description,
 		},
-		Name:    skillName,
-		Path:    skillPath,
-		Content: content,
+		Name:     skillName,
+		Path:     skillPath,
+		Content:  content,
 		LoadedAt: info.Timestamp,
 	}
 
@@ -274,14 +274,14 @@ func (c *Converter) ConvertWithLLM(ctx context.Context, cfg *ServerConfig, outpu
 
 // mcpRawData holds raw MCP server data for LLM processing
 type mcpRawData struct {
-	Name        string                   `json:"name"`
-	Version     string                   `json:"version"`
-	Protocol    string                   `json:"protocol"`
-	Tools       []toolRawData            `json:"tools,omitempty"`
-	Resources   []resourceRawData        `json:"resources,omitempty"`
-	Templates   []templateRawData        `json:"templates,omitempty"`
-	Prompts     []promptRawData          `json:"prompts,omitempty"`
-	UserContext string                   `json:"user_context,omitempty"`
+	Name        string            `json:"name"`
+	Version     string            `json:"version"`
+	Protocol    string            `json:"protocol"`
+	Tools       []toolRawData     `json:"tools,omitempty"`
+	Resources   []resourceRawData `json:"resources,omitempty"`
+	Templates   []templateRawData `json:"templates,omitempty"`
+	Prompts     []promptRawData   `json:"prompts,omitempty"`
+	UserContext string            `json:"user_context,omitempty"`
 }
 
 type toolRawData struct {
@@ -291,9 +291,9 @@ type toolRawData struct {
 }
 
 type resourceRawData struct {
-	Name      string `json:"name"`
-	URI       string `json:"uri"`
-	MIMEType  string `json:"mime_type,omitempty"`
+	Name        string `json:"name"`
+	URI         string `json:"uri"`
+	MIMEType    string `json:"mime_type,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -304,8 +304,8 @@ type templateRawData struct {
 }
 
 type promptRawData struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
 	Arguments   []promptArgRawData `json:"arguments,omitempty"`
 }
 
@@ -622,7 +622,6 @@ func (c *Converter) formatSkillMD(name, description, content string) string {
 	sb.WriteString("---\n")
 	sb.WriteString(fmt.Sprintf("name: %s\n", name))
 	sb.WriteString(fmt.Sprintf("description: %s\n", description))
-	sb.WriteString("user-invocable: true\n")
 	sb.WriteString("---\n\n")
 
 	// Content
@@ -730,14 +729,26 @@ func sanitizeName(name string) string {
 	name = strings.ReplaceAll(name, "_", "-")
 	// Remove any character that's not alphanumeric or hyphen
 	var result strings.Builder
+	lastWasHyphen := false
 	for _, r := range name {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			if r == '-' {
+				if lastWasHyphen {
+					continue
+				}
+				lastWasHyphen = true
+			} else {
+				lastWasHyphen = false
+			}
 			result.WriteRune(r)
 		}
 	}
 	resultStr := result.String()
 	// Remove leading/trailing hyphens
 	resultStr = strings.Trim(resultStr, "-")
+	if len(resultStr) > 64 {
+		resultStr = strings.Trim(resultStr[:64], "-")
+	}
 	if resultStr == "" {
 		return "mcp-skill"
 	}
@@ -810,10 +821,10 @@ func (c *Converter) Discover(ctx context.Context, cfg *ServerConfig) (*ServerCap
 
 // ServerCapabilities holds discovered MCP server capabilities
 type ServerCapabilities struct {
-	Tools            []*mcpsdk.Tool
-	Resources        []*mcpsdk.Resource
+	Tools             []*mcpsdk.Tool
+	Resources         []*mcpsdk.Resource
 	ResourceTemplates []*mcpsdk.ResourceTemplate
-	Prompts          []*mcpsdk.Prompt
+	Prompts           []*mcpsdk.Prompt
 }
 
 // ListTools returns the tool names

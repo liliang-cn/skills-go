@@ -2,7 +2,8 @@ package config
 
 import (
 	"os"
-	"path/filepath"
+
+	"github.com/liliang-cn/skills-go/skill"
 )
 
 // Config holds the configuration for the skills client
@@ -35,16 +36,7 @@ func LoadFromEnv() *Config {
 		cfg.Model = "gpt-4o"
 	}
 
-	// Set default skill paths
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE")
-	}
-
-	cfg.SkillPaths = []string{
-		".claude/skills",
-		filepath.Join(homeDir, ".claude/skills"),
-	}
+	cfg.SkillPaths = skill.DefaultPaths()
 
 	// Add custom paths from env
 	if customPath := os.Getenv("SKILLS_PATH"); customPath != "" {

@@ -9,8 +9,8 @@ import (
 // Registry manages skill discovery and resolution
 type Registry struct {
 	loader   *Loader
-	skills   map[string]*Skill // by path
-	byName   map[string]*Skill // by name
+	skills   map[string]*Skill      // by path
+	byName   map[string]*Skill      // by name
 	handlers map[string]HandlerFunc // handler functions by name
 	mu       sync.RWMutex
 }
@@ -43,6 +43,14 @@ func (r *Registry) Load(ctx context.Context) error {
 	return nil
 }
 
+// Diagnostics returns discovery diagnostics from the underlying loader.
+func (r *Registry) Diagnostics() []Diagnostic {
+	if r.loader == nil {
+		return nil
+	}
+	return r.loader.Diagnostics()
+}
+
 // Get retrieves a skill by name
 func (r *Registry) Get(name string) (*Skill, error) {
 	r.mu.RLock()
@@ -52,6 +60,20 @@ func (r *Registry) Get(name string) (*Skill, error) {
 	if !ok {
 		return nil, ErrSkillNotFound
 	}
+	return s, nil
+}
+
+// GetWithLevel retrieves a skill by name and ensures it is loaded to the requested level.
+func (r *Registry) GetWithLevel(ctx context.Context, name string, level LoadLevel) (*Skill, error) {
+	s, err := r.Get(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.loader.EnsureLoaded(ctx, s, level); err != nil {
+		return nil, err
+	}
+
 	return s, nil
 }
 

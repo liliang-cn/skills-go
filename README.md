@@ -1,6 +1,6 @@
 # skills-go
 
-A Go library for loading and using Claude Skills with OpenAI API (v3.17.0). Includes MCP (Model Context Protocol) server to Skill conversion.
+A Go library for loading and using Agent Skills with OpenAI API (v3.17.0). Includes MCP (Model Context Protocol) server to Skill conversion.
 
 ## Features
 
@@ -12,7 +12,10 @@ A Go library for loading and using Claude Skills with OpenAI API (v3.17.0). Incl
 - **Fork Mode**: Run skills in isolated subagent contexts
 - **MCP Integration**: Convert MCP servers to Skills with optional LLM enhancement
 - **Extensible**: Inject your own OpenAI client or use as a standalone skill manager
-- **Standard Compliant**: Fully adheres to Claude Skills specifications
+- **Agent Skills Defaults**: Metadata-first discovery, `.agents/skills` defaults, and spec-aware validation
+- **Tool-Driven Activation**: Built-in `activate_skill` flow with skill catalog disclosure and structured activation payloads
+- **Discovery Diagnostics**: Collision warnings and trust-gating diagnostics are surfaced without failing skill loading
+- **Extensions**: Supports additional frontmatter fields for local runtime features
 
 ## Installation
 
@@ -22,7 +25,7 @@ go get github.com/liliang-cn/skills-go
 
 ## MCP to Skill Conversion
 
-Convert MCP (Model Context Protocol) servers to Claude Skills with support for both stdio and HTTP transports.
+Convert MCP (Model Context Protocol) servers to Agent Skills with support for both stdio and HTTP transports.
 
 ### Basic Conversion (No LLM)
 
@@ -212,6 +215,10 @@ cli.LoadSkills(ctx)
 resp, _ := cli.Chat(ctx, "Help me with my code")
 ```
 
+`Chat()` discloses a tier-1 skill catalog to the model and exposes a dedicated `activate_skill` tool. When the model decides a skill is relevant, it activates that skill on demand and receives structured skill content plus bundled resource paths.
+
+If you pass `client.WithSessionID("...")`, activated skills are also replayed into later turns for that session so their instructions survive history truncation and duplicate activation attempts can be deduplicated.
+
 ### Pattern 2: Headless (Skill Management Only)
 Use this if you want to manage skills but handle the LLM chat loop yourself.
 
@@ -219,14 +226,31 @@ Use this if you want to manage skills but handle the LLM chat loop yourself.
 cli := client.NewClient(nil, client.WithSkillPaths("./skills"))
 cli.LoadSkills(ctx)
 
-// 1. Resolve skills for a query
-skills, _ := cli.Resolve(ctx, "Commit changes")
+// 1. Inspect the tier-1 catalog
+catalog := cli.SkillCatalog()
 
-// 2. Build system prompt for LLM
+// 2. Build a model-visible catalog prompt if you run your own chat loop
+skills, _ := cli.Resolve(ctx, "Commit changes")
 prompt := cli.BuildSystemPrompt(skills)
 
-// 3. Execute matched skill script
+// 3. Activate the full skill only when needed
+activated, _ := cli.ActivateSkill(ctx, "commit")
+
+// 4. Execute a bundled script if the activated skill references one
 result, _ := cli.ExecuteInteractive(ctx, "commit", "analyze")
+
+_ = catalog
+_ = prompt
+_ = activated
+```
+
+You can also inspect non-fatal discovery warnings and trust skips:
+
+```go
+diagnostics := cli.SkillDiagnostics()
+for _, d := range diagnostics {
+    fmt.Println(d.Code, d.Message)
+}
 ```
 
 ### Pattern 3: Standalone (Full Managed Agent)
@@ -243,14 +267,14 @@ resp, _ := cli.Chat(ctx, "/my-skill arg1")
 
 ## Skill Format
 
-Skills follow the Claude Skills standard:
+Skills follow the Agent Skills format:
 
 ```
 my-skill/
 ├── SKILL.md           # Required: main instructions with YAML frontmatter
-├── template.md        # Optional: template files
-├── examples/          # Optional: example outputs
-└── scripts/           # Optional: executable scripts
+├── scripts/           # Optional: executable scripts
+├── references/        # Optional: documentation loaded on demand
+└── assets/            # Optional: templates and static resources
 ```
 
 ### SKILL.md Format
@@ -259,44 +283,82 @@ my-skill/
 ---
 name: my-skill
 description: What this skill does and when to use it
-disable-model-invocation: true
-context: fork
-agent: Explore
 ---
 
 Your skill instructions here...
-
-Arguments: $ARGUMENTS
-Session: ${CLAUDE_SESSION_ID}
 ```
 
-### Frontmatter Fields
+### Official Frontmatter Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Skill name (defaults to directory name) |
-| `description` | string | What the skill does and when to use it |
-| `argument-hint` | string | Hint for expected arguments |
-| `disable-model-invocation` | bool | Prevent automatic invocation |
-| `user-invocable` | bool | Allow user invocation (default: true) |
-| `allowed-tools` | []string | Tools Claude can use without permission |
-| `model` | string | Model to use for this skill |
-| `context` | string | Set to "fork" for isolated execution |
-| `agent` | string | Agent type when forking |
+| `name` | string | Required. Must match the parent directory name and follow the Agent Skills naming rules |
+| `description` | string | Required. Describes what the skill does and when to use it |
+| `license` | string | Optional license note |
+| `compatibility` | string | Optional environment requirements |
+| `metadata` | map[string]string | Optional implementation-specific metadata |
+| `allowed-tools` | string | Optional space-delimited list of pre-approved tools |
+
+### Repository Extensions
+
+`skills-go` also supports extra frontmatter fields for runtime behavior, including `argument-hint`, `disable-model-invocation`, `user-invocable`, `model`, `context`, `agent`, and `hooks`. These are not part of the base Agent Skills specification.
 
 ## Progressive Disclosure
 
-To save memory and tokens, you can load skills at different levels:
+Discovery defaults to metadata-only loading. Full instructions and resources are loaded only when needed:
 
 ```go
-loader := skill.NewLoader(skill.WithPaths("./skills"))
+loader := skill.NewLoader(skill.WithPaths(".agents/skills"))
 
 // Level 1: Metadata only
 s, _ := loader.LoadWithLevel(ctx, path, skill.LoadLevelMetadata)
 
+// Level 2: Full SKILL.md content
+s, _ = loader.LoadWithLevel(ctx, path, skill.LoadLevelContent)
+
 // Level 3: Full (including scanning scripts/resources)
 loader.EnsureLoaded(ctx, s, skill.LoadLevelFull)
 ```
+
+From the higher-level client API, discovery stays metadata-only as well:
+
+```go
+cli.LoadSkills(ctx)
+
+// Metadata only.
+meta, _ := cli.GetSkill("my-skill")
+
+// Upgrade on demand when you need instructions or resources.
+full, _ := cli.GetSkillWithLevel(ctx, "my-skill", skill.LoadLevelContent)
+scripts, _ := cli.GetSkillWithLevel(ctx, "my-skill", skill.LoadLevelFull)
+```
+
+`Chat()` uses the same model under the hood:
+
+- The model sees a catalog containing `name`, `description`, and `location`
+- The model can call `activate_skill(name)` to load the full instructions
+- Activated skill payloads include the absolute skill directory plus bundled resource paths without eagerly reading those files
+
+Headless integrations can use the same pieces directly:
+
+```go
+catalog := cli.SkillCatalog()
+activated, _ := cli.ActivateSkill(ctx, "my-skill")
+
+fmt.Println(catalog[0].Location)
+fmt.Println(activated.Wrapped)
+```
+
+Project-level trust gating is configurable:
+
+```go
+cli := client.NewClient(
+    nil,
+    client.WithProjectSkillsTrusted(false),
+)
+```
+
+The lower-level hook is `client.WithSkillTrustPolicy(...)`, which lets you allow or deny discovered skills based on scope and path.
 
 ## Variable Substitution
 

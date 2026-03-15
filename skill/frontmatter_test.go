@@ -26,7 +26,7 @@ This is the content.`,
 			expectedContent: "This is the content.",
 		},
 		{
-			name: "frontmatter without description extracts from content",
+			name: "frontmatter without description preserves empty description",
 			input: `---
 name: test-skill
 ---
@@ -34,15 +34,13 @@ First paragraph.
 
 Second paragraph.`,
 			expectedName:    "test-skill",
-			expectedDesc:    "First paragraph.",
+			expectedDesc:    "",
 			expectedContent: "First paragraph.\n\nSecond paragraph.",
 		},
 		{
-			name:            "no frontmatter returns content as-is",
-			input:           `Just content without frontmatter.`,
-			expectedName:    "",
-			expectedDesc:    "",
-			expectedContent: "Just content without frontmatter.",
+			name:        "no frontmatter returns error",
+			input:       `Just content without frontmatter.`,
+			expectError: true,
 		},
 		{
 			name: "invalid frontmatter missing closing separator",
@@ -61,7 +59,7 @@ allowed-tools:
 ---
 Content here.`,
 			expectedName:    "test",
-			expectedDesc:    "Content here.",
+			expectedDesc:    "",
 			expectedContent: "Content here.",
 		},
 		{
@@ -72,7 +70,7 @@ allowed-tools: "Read, Write, Edit, Bash"
 ---
 Content here.`,
 			expectedName:    "test",
-			expectedDesc:    "Content here.",
+			expectedDesc:    "",
 			expectedContent: "Content here.",
 		},
 		{
@@ -83,7 +81,7 @@ allowed-tools: "Bash(git:*) Bash(jq:*) Read"
 ---
 Content here.`,
 			expectedName:    "test",
-			expectedDesc:    "Content here.",
+			expectedDesc:    "",
 			expectedContent: "Content here.",
 		},
 		{
@@ -96,7 +94,7 @@ metadata:
 ---
 Content.`,
 			expectedName:    "test",
-			expectedDesc:    "Content.",
+			expectedDesc:    "",
 			expectedContent: "Content.",
 		},
 		{
@@ -112,36 +110,7 @@ hooks:
 ---
 Content.`,
 			expectedName:    "test",
-			expectedDesc:    "Content.",
-			expectedContent: "Content.",
-		},
-		{
-			name: "frontmatter with metadata field",
-			input: `---
-name: test
-metadata:
-  version: "1.0.0"
-  author: someone
----
-Content.`,
-			expectedName:    "test",
-			expectedDesc:    "Content.",
-			expectedContent: "Content.",
-		},
-		{
-			name: "frontmatter with PreToolUse hooks",
-			input: `---
-name: test
-hooks:
-  PreToolUse:
-    - matcher: "Write|Edit"
-      hooks:
-        - type: command
-          command: "echo test"
----
-Content.`,
-			expectedName:    "test",
-			expectedDesc:    "Content.",
+			expectedDesc:    "",
 			expectedContent: "Content.",
 		},
 		{

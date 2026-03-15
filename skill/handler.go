@@ -30,7 +30,7 @@ func Invoke(ctx context.Context, registry *Registry, name string, opts Execution
 	start := time.Now()
 
 	// Get the skill
-	skill, err := registry.Get(name)
+	skill, err := registry.GetWithLevel(ctx, name, LoadLevelContent)
 	if err != nil {
 		return &ExecutionOutcome{
 			Success:  false,
@@ -68,9 +68,9 @@ func executeHandler(ctx context.Context, handler HandlerFunc, opts ExecutionOpti
 	}
 
 	return &ExecutionOutcome{
-		Success:  true,
-		Output:   output,
-		Duration: time.Since(start),
+		Success:   true,
+		Output:    output,
+		Duration:  time.Since(start),
 		Variables: opts.Variables,
 	}, nil
 }

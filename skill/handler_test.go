@@ -2,6 +2,8 @@ package skill
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -103,6 +105,54 @@ func TestInvokeFileBasedSkill(t *testing.T) {
 
 	if outcome.Output != "This is the skill content" {
 		t.Errorf("unexpected output: %s", outcome.Output)
+	}
+}
+
+func TestInvokeFileBasedSkillLoadsContentOnDemand(t *testing.T) {
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	skillPath := filepath.Join(baseDir, "test-skill")
+
+	if err := os.MkdirAll(skillPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(`---
+name: test-skill
+description: Loads file content lazily when invoked.
+---
+
+This is the lazily loaded skill content.
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	loader := NewLoader(WithPaths(baseDir))
+	registry := NewRegistry(loader)
+
+	if err := registry.Load(ctx); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	skill, err := registry.Get("test-skill")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if skill.Content != "" {
+		t.Fatalf("expected metadata-only skill before invoke, got content %q", skill.Content)
+	}
+
+	outcome, err := Invoke(ctx, registry, "test-skill", ExecutionOptions{})
+	if err != nil {
+		t.Fatalf("Invoke failed: %v", err)
+	}
+	if !outcome.Success {
+		t.Fatal("expected success")
+	}
+	if outcome.Output != "This is the lazily loaded skill content." {
+		t.Fatalf("Output = %q, want lazily loaded content", outcome.Output)
+	}
+	if skill.LoadLevel != LoadLevelContent {
+		t.Fatalf("LoadLevel = %v, want %v", skill.LoadLevel, LoadLevelContent)
 	}
 }
 

@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,10 +10,25 @@ import (
 	"time"
 )
 
+// DefaultPaths returns the default Agent Skills search paths.
+func DefaultPaths() []string {
+	homeDir, _ := os.UserHomeDir()
+
+	paths := []string{".agents/skills"}
+	if homeDir != "" {
+		paths = append(paths, filepath.Join(homeDir, ".agents/skills"))
+	}
+
+	return paths
+}
+
 // Loader loads skills from filesystem
 type Loader struct {
-	paths []string
-	cache *Cache
+	paths       []string
+	cache       *Cache
+	trustPolicy TrustPolicy
+	diagnostics []Diagnostic
+	diagMu      sync.RWMutex
 }
 
 // LoaderOption configures a Loader
@@ -32,15 +48,17 @@ func WithCache(cache *Cache) LoaderOption {
 	}
 }
 
+// WithTrustPolicy sets the policy used to allow or deny discovered skills.
+func WithTrustPolicy(policy TrustPolicy) LoaderOption {
+	return func(l *Loader) {
+		l.trustPolicy = policy
+	}
+}
+
 // NewLoader creates a new skill loader
 func NewLoader(opts ...LoaderOption) *Loader {
-	homeDir, _ := os.UserHomeDir()
-
 	l := &Loader{
-		paths: []string{
-			".claude/skills",
-			filepath.Join(homeDir, ".claude/skills"),
-		},
+		paths: DefaultPaths(),
 		cache: NewCache(),
 	}
 
@@ -56,10 +74,9 @@ func (l *Loader) Load(ctx context.Context, skillPath string) (*Skill, error) {
 	return l.LoadWithLevel(ctx, skillPath, LoadLevelFull)
 }
 
-// LoadMetadata loads only the metadata and content of a skill, skipping resources (scripts, references, assets)
-// This is equivalent to LoadLevelContent (Level 2 in progressive disclosure)
+// LoadMetadata loads only skill metadata from SKILL.md.
 func (l *Loader) LoadMetadata(ctx context.Context, skillPath string) (*Skill, error) {
-	return l.LoadWithLevel(ctx, skillPath, LoadLevelContent)
+	return l.LoadWithLevel(ctx, skillPath, LoadLevelMetadata)
 }
 
 // LoadWithLevel loads a skill with a specific level of detail
@@ -77,7 +94,7 @@ func (l *Loader) LoadWithLevel(ctx context.Context, skillPath string, level Load
 	skillFile := filepath.Join(skillPath, "SKILL.md")
 	if _, err := os.Stat(skillFile); err != nil {
 		// Maybe skillPath points directly to SKILL.md
-		if strings.HasSuffix(skillPath, "SKILL.md") {
+		if filepath.Base(skillPath) == "SKILL.md" {
 			skillFile = skillPath
 			skillPath = filepath.Dir(skillPath)
 		} else {
@@ -97,32 +114,24 @@ func (l *Loader) LoadWithLevel(ctx context.Context, skillPath string, level Load
 		return nil, err
 	}
 
-	// Use directory name if name is empty
-	if meta.Name == "" {
-		meta.Name = filepath.Base(skillPath)
-		meta.Name = strings.ToLower(meta.Name)
-		meta.Name = strings.ReplaceAll(meta.Name, " ", "-")
+	if err := ValidateMeta(meta, skillPath); err != nil {
+		return nil, err
 	}
 
 	skill := &Skill{
-		Meta:      *meta,
-		Path:      skillPath,
-		Name:      meta.Name,
-		Content:   markdown,
-		Raw:       string(content),
-		LoadedAt:  time.Now(),
-		LoadLevel: LoadLevelContent, // We at least have content now
+		Meta:     *meta,
+		Path:     skillPath,
+		Name:     meta.Name,
+		Scope:    classifySkillScope(skillPath),
+		LoadedAt: time.Now(),
 	}
 
-	// If level 1 (Metadata only) is requested, we could technically drop Content/Raw to save memory,
-	// but since we already read the file, keeping it is usually better unless memory is constrained.
-	// However, to strictly follow the pattern, if LoadLevelMetadata is requested, we might want to
-	// reflect that in the struct. For this implementation, we treat reading SKILL.md as LoadLevelContent.
-	if level == LoadLevelMetadata {
+	if level >= LoadLevelContent {
+		skill.Content = markdown
+		skill.Raw = string(content)
+		skill.LoadLevel = LoadLevelContent
+	} else {
 		skill.LoadLevel = LoadLevelMetadata
-		// Optionally clear content if strict memory usage is required:
-		// skill.Content = ""
-		// skill.Raw = ""
 	}
 
 	// Load resources if requested
@@ -143,89 +152,93 @@ func (l *Loader) LoadWithLevel(ctx context.Context, skillPath string, level Load
 
 // EnsureLoaded ensures the skill is loaded to the specified level
 func (l *Loader) EnsureLoaded(ctx context.Context, skill *Skill, level LoadLevel) error {
-	if skill.LoadLevel >= level {
+	if effectiveLoadLevel(skill) >= level {
 		return nil
 	}
 
-	// Upgrade to Content level (Metadata -> Content)
-	// Since LoadWithLevel already loads content in memory even for Metadata level,
-	// we just need to update the state.
-	if level >= LoadLevelContent && skill.LoadLevel < LoadLevelContent {
-		skill.LoadLevel = LoadLevelContent
+	if skill.Path == "" {
+		return nil
 	}
 
-	// Upgrade to Full level (Content -> Full)
-	if level >= LoadLevelFull && skill.LoadLevel < LoadLevelFull {
-		resources, err := l.loadResources(skill.Path)
-		if err != nil {
-			return err
-		}
-		skill.Resources = resources
-		skill.LoadLevel = LoadLevelFull
+	loaded, err := l.LoadWithLevel(ctx, skill.Path, level)
+	if err != nil {
+		return err
 	}
-	
-	// Update cache
+
+	*skill = *loaded
 	l.cache.Set(skill.Path, skill)
 	return nil
 }
 
 // LoadAll loads all discoverable skills
 func (l *Loader) LoadAll(ctx context.Context) ([]*Skill, error) {
+	l.resetDiagnostics()
+
 	var skills []*Skill
 	seen := make(map[string]bool)
-	var mu sync.Mutex
-
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(l.paths))
+	byName := make(map[string]int)
 
 	for _, basePath := range l.paths {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-
-			entries, err := os.ReadDir(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return
-				}
-				errChan <- err
-				return
-			}
-
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-
-				skillPath := filepath.Join(path, entry.Name())
-
-				mu.Lock()
-				if seen[skillPath] {
-					mu.Unlock()
-					continue
-				}
-				seen[skillPath] = true
-				mu.Unlock()
-
-				skill, err := l.Load(ctx, skillPath)
-				if err != nil {
-					continue // Skip invalid skills
-				}
-
-				mu.Lock()
-				skills = append(skills, skill)
-				mu.Unlock()
-			}
-		}(basePath)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	// Check for errors
-	for err := range errChan {
+		entries, err := os.ReadDir(basePath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, err
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			skillPath := filepath.Join(basePath, entry.Name())
+			if seen[skillPath] {
+				continue
+			}
+			seen[skillPath] = true
+
+			scope := classifySkillScope(skillPath)
+			if !l.isTrusted(scope, skillPath) {
+				continue
+			}
+
+			skill, err := l.LoadMetadata(ctx, skillPath)
+			if err != nil {
+				continue // Skip invalid skills
+			}
+			skill.Scope = scope
+
+			if idx, exists := byName[skill.Name]; exists {
+				existing := skills[idx]
+				if shouldReplaceSkill(existing, skill) {
+					l.addDiagnostic(Diagnostic{
+						Severity:   DiagnosticSeverityWarning,
+						Code:       "skill_name_collision",
+						Message:    fmt.Sprintf("skill %q from %s overrides %s due to precedence", skill.Name, skillLocation(skillPath), skillLocation(existing.Path)),
+						SkillName:  existing.Name,
+						Path:       skillLocation(existing.Path),
+						Scope:      existing.Scope,
+						ShadowedBy: skillLocation(skillPath),
+					})
+					skills[idx] = skill
+					continue
+				}
+
+				l.addDiagnostic(Diagnostic{
+					Severity:   DiagnosticSeverityWarning,
+					Code:       "skill_name_collision",
+					Message:    fmt.Sprintf("skill %q from %s was shadowed by %s", skill.Name, skillLocation(skillPath), skillLocation(existing.Path)),
+					SkillName:  skill.Name,
+					Path:       skillLocation(skillPath),
+					Scope:      skill.Scope,
+					ShadowedBy: skillLocation(existing.Path),
+				})
+				continue
+			}
+
+			byName[skill.Name] = len(skills)
+			skills = append(skills, skill)
 		}
 	}
 
@@ -234,7 +247,10 @@ func (l *Loader) LoadAll(ctx context.Context) ([]*Skill, error) {
 
 // Discover recursively discovers skills from a starting path
 func (l *Loader) Discover(ctx context.Context, startPath string) ([]*Skill, error) {
+	l.resetDiagnostics()
+
 	var skills []*Skill
+	byName := make(map[string]int)
 
 	err := filepath.Walk(startPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -245,10 +261,44 @@ func (l *Loader) Discover(ctx context.Context, startPath string) ([]*Skill, erro
 			// Check if contains SKILL.md
 			skillFile := filepath.Join(path, "SKILL.md")
 			if _, err := os.Stat(skillFile); err == nil {
-				skill, err := l.Load(ctx, path)
-				if err == nil {
-					skills = append(skills, skill)
+				scope := classifySkillScope(path)
+				if !l.isTrusted(scope, path) {
+					return filepath.SkipDir
 				}
+
+				skill, err := l.LoadMetadata(ctx, path)
+				if err == nil {
+					skill.Scope = scope
+					if idx, exists := byName[skill.Name]; exists {
+						existing := skills[idx]
+						if shouldReplaceSkill(existing, skill) {
+							l.addDiagnostic(Diagnostic{
+								Severity:   DiagnosticSeverityWarning,
+								Code:       "skill_name_collision",
+								Message:    fmt.Sprintf("skill %q from %s overrides %s due to precedence", skill.Name, skillLocation(path), skillLocation(existing.Path)),
+								SkillName:  existing.Name,
+								Path:       skillLocation(existing.Path),
+								Scope:      existing.Scope,
+								ShadowedBy: skillLocation(path),
+							})
+							skills[idx] = skill
+						} else {
+							l.addDiagnostic(Diagnostic{
+								Severity:   DiagnosticSeverityWarning,
+								Code:       "skill_name_collision",
+								Message:    fmt.Sprintf("skill %q from %s was shadowed by %s", skill.Name, skillLocation(path), skillLocation(existing.Path)),
+								SkillName:  skill.Name,
+								Path:       skillLocation(path),
+								Scope:      skill.Scope,
+								ShadowedBy: skillLocation(existing.Path),
+							})
+						}
+					} else {
+						byName[skill.Name] = len(skills)
+						skills = append(skills, skill)
+					}
+				}
+				return filepath.SkipDir
 			}
 		}
 
@@ -324,4 +374,105 @@ func (l *Loader) loadResources(skillPath string) (*Resources, error) {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// Diagnostics returns non-fatal discovery diagnostics from the last discovery run.
+func (l *Loader) Diagnostics() []Diagnostic {
+	l.diagMu.RLock()
+	defer l.diagMu.RUnlock()
+
+	diagnostics := make([]Diagnostic, len(l.diagnostics))
+	copy(diagnostics, l.diagnostics)
+	return diagnostics
+}
+
+func (l *Loader) resetDiagnostics() {
+	l.diagMu.Lock()
+	defer l.diagMu.Unlock()
+
+	l.diagnostics = nil
+}
+
+func (l *Loader) addDiagnostic(d Diagnostic) {
+	l.diagMu.Lock()
+	defer l.diagMu.Unlock()
+
+	l.diagnostics = append(l.diagnostics, d)
+}
+
+func (l *Loader) isTrusted(scope SkillScope, skillPath string) bool {
+	if l.trustPolicy == nil {
+		return true
+	}
+	allowed, reason := l.trustPolicy(scope, skillPath)
+	if allowed {
+		return true
+	}
+
+	if reason == "" {
+		reason = "blocked by trust policy"
+	}
+	l.addDiagnostic(Diagnostic{
+		Severity:  DiagnosticSeverityWarning,
+		Code:      "untrusted_project_skill",
+		Message:   fmt.Sprintf("skill at %s was skipped: %s", skillLocation(skillPath), reason),
+		Path:      skillLocation(skillPath),
+		Scope:     scope,
+		SkillName: filepath.Base(skillPath),
+	})
+	return false
+}
+
+func classifySkillScope(skillPath string) SkillScope {
+	absSkillPath, err := filepath.Abs(skillPath)
+	if err != nil {
+		absSkillPath = skillPath
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		if pathWithin(absSkillPath, cwd) {
+			return SkillScopeProject
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if pathWithin(absSkillPath, home) {
+			return SkillScopeUser
+		}
+	}
+
+	return SkillScopeCustom
+}
+
+func pathWithin(path, root string) bool {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func shouldReplaceSkill(existing, candidate *Skill) bool {
+	if existing == nil {
+		return true
+	}
+	if existing.Scope == SkillScopeUser && candidate.Scope == SkillScopeProject {
+		return true
+	}
+	return false
+}
+
+func skillLocation(skillPath string) string {
+	location, err := filepath.Abs(filepath.Join(skillPath, "SKILL.md"))
+	if err != nil {
+		return filepath.Join(skillPath, "SKILL.md")
+	}
+	return location
 }

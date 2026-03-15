@@ -13,8 +13,7 @@ var separator = []byte("---")
 func ParseFrontmatter(content []byte) (*Meta, string, error) {
 	// Check if starts with ---
 	if !bytes.HasPrefix(content, separator) {
-		// No frontmatter
-		return &Meta{}, string(content), nil
+		return nil, "", ErrInvalidFrontmatter
 	}
 
 	// Find second ---
@@ -31,22 +30,7 @@ func ParseFrontmatter(content []byte) (*Meta, string, error) {
 		return nil, "", err
 	}
 
-	// If description is empty, use first paragraph of markdown
-	if meta.Description == "" {
-		meta.Description = extractFirstParagraph(markdown)
-	}
-
 	return &meta, string(markdown), nil
-}
-
-// extractFirstParagraph extracts the first paragraph from markdown
-func extractFirstParagraph(markdown []byte) string {
-	// Simple extraction: find first paragraph
-	end := bytes.Index(markdown, []byte("\n\n"))
-	if end == -1 {
-		end = len(markdown)
-	}
-	return strings.TrimSpace(string(markdown[:end]))
 }
 
 // MarshalFrontmatter converts metadata and content to SKILL.md format

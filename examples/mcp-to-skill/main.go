@@ -66,7 +66,7 @@ func printUsage() {
 	fmt.Println("  go run main.go discover python server.py")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
-	fmt.Println("  SKILLS_OUTPUT_DIR    Output directory for generated skills (default: ./skills)")
+	fmt.Println("  SKILLS_OUTPUT_DIR    Output directory for generated skills (default: ./.agents/skills)")
 	fmt.Println("  OPENAI_API_KEY       OpenAI API key for LLM-based conversion")
 	fmt.Println("  OPENAI_BASE_URL      Optional base URL for OpenAI-compatible API")
 }
@@ -79,7 +79,7 @@ func handleConvert(ctx context.Context, args []string, useLLM bool) {
 	// Get output directory
 	outputDir := os.Getenv("SKILLS_OUTPUT_DIR")
 	if outputDir == "" {
-		outputDir = "./skills"
+		outputDir = ".agents/skills"
 	}
 
 	// Create server config
@@ -130,7 +130,7 @@ func handleConvertHTTP(ctx context.Context, args []string, useLLM bool) {
 	// Get output directory
 	outputDir := os.Getenv("SKILLS_OUTPUT_DIR")
 	if outputDir == "" {
-		outputDir = "./skills"
+		outputDir = ".agents/skills"
 	}
 
 	// Create server config

@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrSkillNotFound         = errors.New("skill not found")
+	ErrInvalidSkill          = errors.New("invalid skill")
 	ErrInvalidFrontmatter    = errors.New("invalid frontmatter")
 	ErrInvalidInvocation     = errors.New("invalid skill invocation")
 	ErrSkillNotUserInvocable = errors.New("skill is not user invocable")

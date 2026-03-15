@@ -19,12 +19,16 @@ import (
 
 // Client is the LLM skills client
 type Client struct {
-	client   *openai.Client
-	model    string
-	skills   *skill.Registry
-	renderer *renderer.Renderer
-	executor *skill.Executor
-	config   *Config
+	client              *openai.Client
+	model               string
+	skills              *skill.Registry
+	renderer            *renderer.Renderer
+	executor            *skill.Executor
+	config              *Config
+	skillTrustPolicy    skill.TrustPolicy
+	replaySessionSkills bool
+	sessions            map[string]*skillSession
+	sessionsMu          sync.RWMutex
 }
 
 // Config configures the client
@@ -60,6 +64,36 @@ func WithOpenAIClient(client *openai.Client) ClientOption {
 	}
 }
 
+// WithSkillTrustPolicy sets the trust policy used during skill discovery.
+func WithSkillTrustPolicy(policy skill.TrustPolicy) ClientOption {
+	return func(c *Client) {
+		c.skillTrustPolicy = policy
+	}
+}
+
+// WithProjectSkillsTrusted controls whether project-level skills are trusted by default.
+func WithProjectSkillsTrusted(trusted bool) ClientOption {
+	return func(c *Client) {
+		if trusted {
+			c.skillTrustPolicy = nil
+			return
+		}
+		c.skillTrustPolicy = func(scope skill.SkillScope, skillPath string) (bool, string) {
+			if scope == skill.SkillScopeProject {
+				return false, "project-level skills are not trusted"
+			}
+			return true, ""
+		}
+	}
+}
+
+// WithSessionSkillReplay controls whether activated skills are replayed for subsequent turns in the same session.
+func WithSessionSkillReplay(enabled bool) ClientOption {
+	return func(c *Client) {
+		c.replaySessionSkills = enabled
+	}
+}
+
 // NewClient creates a new LLM skills client
 func NewClient(cfg *Config, opts ...ClientOption) *Client {
 	if cfg == nil {
@@ -67,10 +101,12 @@ func NewClient(cfg *Config, opts ...ClientOption) *Client {
 	}
 
 	c := &Client{
-		model:    cfg.Model,
-		config:   cfg,
-		renderer: renderer.NewRenderer(),
-		executor: skill.NewExecutor(),
+		model:               cfg.Model,
+		config:              cfg,
+		renderer:            renderer.NewRenderer(),
+		executor:            skill.NewExecutor(),
+		replaySessionSkills: true,
+		sessions:            make(map[string]*skillSession),
 	}
 
 	// Apply options first (to potentially set client or paths)
@@ -81,6 +117,7 @@ func NewClient(cfg *Config, opts ...ClientOption) *Client {
 	// Initialize Loader/Registry
 	loader := skill.NewLoader(
 		skill.WithPaths(c.config.SkillPaths...),
+		skill.WithTrustPolicy(c.skillTrustPolicy),
 	)
 	c.skills = skill.NewRegistry(loader)
 
@@ -134,45 +171,7 @@ func (c *Client) Chat(ctx context.Context, userMessage string, opts ...ChatOptio
 		return c.invokeSkill(ctx, userMessage, cfg)
 	}
 
-	// Otherwise, find relevant skills
-	relevantSkills, err := c.skills.Resolve(ctx, userMessage)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build system message with skill descriptions
-	systemMsg := c.buildSystemMessage(relevantSkills)
-
-	// Build messages
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage(systemMsg),
-		openai.UserMessage(userMessage),
-	}
-
-	// Add conversation history if provided
-	if cfg.History != nil {
-		messages = append(cfg.History, messages...)
-	}
-
-	// Call OpenAI API
-	resp, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Messages: messages,
-		Model:    shared.ChatModel(c.getModel()),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &ChatResponse{
-		Content:      resp.Choices[0].Message.Content,
-		SkillsUsed:   skillNames(relevantSkills),
-		FinishReason: string(resp.Choices[0].FinishReason),
-		Usage: Usage{
-			PromptTokens:     int(resp.Usage.PromptTokens),
-			CompletionTokens: int(resp.Usage.CompletionTokens),
-			TotalTokens:      int(resp.Usage.TotalTokens),
-		},
-	}, nil
+	return c.chatWithSkillTooling(ctx, userMessage, cfg)
 }
 
 // ChatOption configures a chat request
@@ -240,7 +239,7 @@ func (c *Client) invokeSkill(ctx context.Context, invocation string, cfg *chatCo
 		return nil, skill.ErrInvalidInvocation
 	}
 
-	s, err := c.skills.Get(skillName)
+	s, err := c.skills.GetWithLevel(ctx, skillName, skill.LoadLevelContent)
 	if err != nil {
 		return nil, err
 	}
@@ -345,14 +344,25 @@ func (c *Client) executeInSubagent(ctx context.Context, s *skill.Skill, rendered
 
 // buildSystemMessage builds a system message listing available skills
 func (c *Client) buildSystemMessage(skills []*skill.Skill) string {
-	var sb strings.Builder
-	sb.WriteString("You are an AI assistant with the following skills available:\n\n")
-
-	for _, s := range skills {
-		sb.WriteString(fmt.Sprintf("- /%s: %s\n", s.Name, s.Meta.Description))
+	if len(skills) == 0 {
+		return ""
 	}
 
-	sb.WriteString("\nUse these skills when relevant to help the user.")
+	entries := buildSkillCatalogEntries(skills)
+	var sb strings.Builder
+	sb.WriteString("The following Agent Skills provide specialized instructions for specific tasks.\n")
+	sb.WriteString("When a task matches a skill's description, call the activate_skill tool with the skill's name before proceeding.\n")
+	sb.WriteString("When an activated skill references relative paths, resolve them against the skill directory returned by the tool.\n\n")
+	sb.WriteString("<available_skills>\n")
+
+	for _, entry := range entries {
+		sb.WriteString("  <skill>\n")
+		sb.WriteString("    <name>" + entry.Name + "</name>\n")
+		sb.WriteString("    <description>" + escapeXML(entry.Description) + "</description>\n")
+		sb.WriteString("    <location>" + escapeXML(entry.Location) + "</location>\n")
+		sb.WriteString("  </skill>\n")
+	}
+	sb.WriteString("</available_skills>")
 
 	return sb.String()
 }
@@ -410,6 +420,16 @@ func (c *Client) GetSkill(name string) (*skill.Skill, error) {
 	return c.skills.Get(name)
 }
 
+// GetSkillWithLevel returns a skill by name and upgrades it on demand.
+func (c *Client) GetSkillWithLevel(ctx context.Context, name string, level skill.LoadLevel) (*skill.Skill, error) {
+	return c.skills.GetWithLevel(ctx, name, level)
+}
+
+// SkillDiagnostics returns non-fatal skill discovery diagnostics such as collisions or trust skips.
+func (c *Client) SkillDiagnostics() []skill.Diagnostic {
+	return c.skills.Diagnostics()
+}
+
 // ReloadSkills reloads all skills
 func (c *Client) ReloadSkills(ctx context.Context) error {
 	c.skills.Clear()
@@ -418,7 +438,7 @@ func (c *Client) ReloadSkills(ctx context.Context) error {
 
 // ExecuteScript runs a script from a skill
 func (c *Client) ExecuteScript(ctx context.Context, skillName, scriptName string, args ...string) (*skill.Result, error) {
-	s, err := c.skills.Get(skillName)
+	s, err := c.skills.GetWithLevel(ctx, skillName, skill.LoadLevelFull)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +462,7 @@ func (c *Client) ExecuteInteractive(ctx context.Context, command string, args ..
 
 // ListScripts returns all scripts in a skill
 func (c *Client) ListScripts(skillName string) ([]skill.Script, error) {
-	s, err := c.skills.Get(skillName)
+	s, err := c.skills.GetWithLevel(context.Background(), skillName, skill.LoadLevelFull)
 	if err != nil {
 		return nil, err
 	}
@@ -475,13 +495,13 @@ func (c *Client) ConvertMCPServer(ctx context.Context, cfg *mcp.ServerConfig, ou
 // ConvertMCPServerCommand converts a command-based MCP server to a Skill
 func (c *Client) ConvertMCPServerCommand(ctx context.Context, name string, command string, args ...string) (*skill.Skill, error) {
 	cfg := mcp.NewCommand(name, command, args...)
-	return c.ConvertMCPServer(ctx, cfg, c.config.SkillPaths[0])
+	return c.ConvertMCPServer(ctx, cfg, c.defaultSkillOutputDir())
 }
 
 // ConvertMCPServerHTTP converts an HTTP-based MCP server to a Skill
 func (c *Client) ConvertMCPServerHTTP(ctx context.Context, name string, url string) (*skill.Skill, error) {
 	cfg := mcp.NewHTTP(name, url)
-	return c.ConvertMCPServer(ctx, cfg, c.config.SkillPaths[0])
+	return c.ConvertMCPServer(ctx, cfg, c.defaultSkillOutputDir())
 }
 
 // DiscoverMCPServer discovers capabilities of an MCP server without converting
@@ -502,13 +522,21 @@ func (c *Client) ConvertMCPServerWithLLM(ctx context.Context, cfg *mcp.ServerCon
 // ConvertMCPServerCommandWithLLM converts a command-based MCP server to a Skill using LLM
 func (c *Client) ConvertMCPServerCommandWithLLM(ctx context.Context, name string, command string, args ...string) (*skill.Skill, error) {
 	cfg := mcp.NewCommand(name, command, args...)
-	return c.ConvertMCPServerWithLLM(ctx, cfg, c.config.SkillPaths[0])
+	return c.ConvertMCPServerWithLLM(ctx, cfg, c.defaultSkillOutputDir())
 }
 
 // ConvertMCPServerHTTPWithLLM converts an HTTP-based MCP server to a Skill using LLM
 func (c *Client) ConvertMCPServerHTTPWithLLM(ctx context.Context, name string, url string) (*skill.Skill, error) {
 	cfg := mcp.NewHTTP(name, url)
-	return c.ConvertMCPServerWithLLM(ctx, cfg, c.config.SkillPaths[0])
+	return c.ConvertMCPServerWithLLM(ctx, cfg, c.defaultSkillOutputDir())
+}
+
+func (c *Client) defaultSkillOutputDir() string {
+	if len(c.config.SkillPaths) > 0 {
+		return c.config.SkillPaths[0]
+	}
+
+	return skill.DefaultPaths()[0]
 }
 
 // MCPServerManager returns or creates an MCP manager for the client
