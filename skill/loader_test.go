@@ -189,6 +189,8 @@ User content.
 	if err != nil {
 		t.Fatalf("Abs failed: %v", err)
 	}
+	gotPath, _ = filepath.EvalSymlinks(gotPath)
+	wantPath, _ = filepath.EvalSymlinks(wantPath)
 	if gotPath != wantPath {
 		t.Fatalf("Path = %q, want %q", gotPath, wantPath)
 	}
@@ -206,10 +208,14 @@ User content.
 	if diagnostics[0].Code != "skill_name_collision" {
 		t.Fatalf("Diagnostic code = %q, want %q", diagnostics[0].Code, "skill_name_collision")
 	}
-	if diagnostics[0].Path != skillLocation(userSkillPath) {
+	gotDiagPath, _ := filepath.EvalSymlinks(diagnostics[0].Path)
+	wantDiagPath, _ := filepath.EvalSymlinks(skillLocation(userSkillPath))
+	if gotDiagPath != wantDiagPath {
 		t.Fatalf("Diagnostic path = %q, want %q", diagnostics[0].Path, skillLocation(userSkillPath))
 	}
-	if diagnostics[0].ShadowedBy != skillLocation(projectSkillPath) {
+	gotShadowedBy, _ := filepath.EvalSymlinks(diagnostics[0].ShadowedBy)
+	wantShadowedBy, _ := filepath.EvalSymlinks(skillLocation(projectSkillPath))
+	if gotShadowedBy != wantShadowedBy {
 		t.Fatalf("Diagnostic shadowed_by = %q, want %q", diagnostics[0].ShadowedBy, skillLocation(projectSkillPath))
 	}
 }
@@ -249,8 +255,70 @@ description: Skipped by trust policy.
 	if diagnostics[0].Code != "untrusted_project_skill" {
 		t.Fatalf("Diagnostic code = %q, want %q", diagnostics[0].Code, "untrusted_project_skill")
 	}
-	if diagnostics[0].Path != skillLocation(projectSkillPath) {
+	gotDiagPath, _ := filepath.EvalSymlinks(diagnostics[0].Path)
+	wantDiagPath, _ := filepath.EvalSymlinks(skillLocation(projectSkillPath))
+	if gotDiagPath != wantDiagPath {
 		t.Fatalf("Diagnostic path = %q, want %q", diagnostics[0].Path, skillLocation(projectSkillPath))
+	}
+}
+
+func TestLoaderAssignsCollectionForNestedSkills(t *testing.T) {
+	ctx := context.Background()
+	baseDir := t.TempDir()
+
+	nestedSkillPath := filepath.Join(baseDir, "impeccable", "frontend-design")
+	writeTestSkill(t, nestedSkillPath, `---
+name: frontend-design
+description: Nested collection skill.
+---
+`)
+
+	standaloneSkillPath := filepath.Join(baseDir, "pptx")
+	writeTestSkill(t, standaloneSkillPath, `---
+name: pptx
+description: Standalone skill.
+---
+`)
+
+	loader := NewLoader(WithPaths(baseDir))
+	loader.paths = []string{baseDir}
+	skills, err := loader.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll failed: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("LoadAll returned %d skills, want 2", len(skills))
+	}
+
+	var nested, standalone *Skill
+	for _, skill := range skills {
+		switch skill.Name {
+		case "frontend-design":
+			nested = skill
+		case "pptx":
+			standalone = skill
+		}
+	}
+
+	if nested == nil {
+		t.Fatal("nested skill not found")
+	}
+	if nested.Collection != "impeccable" {
+		t.Fatalf("Collection = %q, want %q", nested.Collection, "impeccable")
+	}
+	wantCollectionPath := filepath.Join(baseDir, "impeccable")
+	if nested.CollectionPath != wantCollectionPath {
+		t.Fatalf("CollectionPath = %q, want %q", nested.CollectionPath, wantCollectionPath)
+	}
+
+	if standalone == nil {
+		t.Fatal("standalone skill not found")
+	}
+	if standalone.Collection != "" {
+		t.Fatalf("standalone Collection = %q, want empty", standalone.Collection)
+	}
+	if standalone.CollectionPath != "" {
+		t.Fatalf("standalone CollectionPath = %q, want empty", standalone.CollectionPath)
 	}
 }
 

@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -175,6 +176,41 @@ func (r *Registry) ListSkills() []*Skill {
 		skills = append(skills, s)
 	}
 	return skills
+}
+
+// ListCollections returns grouped collections for skills that belong to a bundle/source.
+func (r *Registry) ListCollections() []*Collection {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	byName := make(map[string]*Collection)
+	for _, s := range r.byName {
+		if s.Collection == "" {
+			continue
+		}
+		col, ok := byName[s.Collection]
+		if !ok {
+			col = &Collection{
+				Name:  s.Collection,
+				Path:  s.CollectionPath,
+				Scope: s.Scope,
+			}
+			byName[s.Collection] = col
+		}
+		col.Skills = append(col.Skills, s)
+	}
+
+	collections := make([]*Collection, 0, len(byName))
+	for _, c := range byName {
+		sort.Slice(c.Skills, func(i, j int) bool {
+			return c.Skills[i].Name < c.Skills[j].Name
+		})
+		collections = append(collections, c)
+	}
+	sort.Slice(collections, func(i, j int) bool {
+		return collections[i].Name < collections[j].Name
+	})
+	return collections
 }
 
 // Add adds a skill to the registry

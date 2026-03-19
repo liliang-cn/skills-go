@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,66 +180,8 @@ func (l *Loader) LoadAll(ctx context.Context) ([]*Skill, error) {
 	byName := make(map[string]int)
 
 	for _, basePath := range l.paths {
-		entries, err := os.ReadDir(basePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		if err := l.walkSkills(ctx, basePath, seen, byName, &skills); err != nil {
 			return nil, err
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-
-			skillPath := filepath.Join(basePath, entry.Name())
-			if seen[skillPath] {
-				continue
-			}
-			seen[skillPath] = true
-
-			scope := classifySkillScope(skillPath)
-			if !l.isTrusted(scope, skillPath) {
-				continue
-			}
-
-			skill, err := l.LoadMetadata(ctx, skillPath)
-			if err != nil {
-				continue // Skip invalid skills
-			}
-			skill.Scope = scope
-
-			if idx, exists := byName[skill.Name]; exists {
-				existing := skills[idx]
-				if shouldReplaceSkill(existing, skill) {
-					l.addDiagnostic(Diagnostic{
-						Severity:   DiagnosticSeverityWarning,
-						Code:       "skill_name_collision",
-						Message:    fmt.Sprintf("skill %q from %s overrides %s due to precedence", skill.Name, skillLocation(skillPath), skillLocation(existing.Path)),
-						SkillName:  existing.Name,
-						Path:       skillLocation(existing.Path),
-						Scope:      existing.Scope,
-						ShadowedBy: skillLocation(skillPath),
-					})
-					skills[idx] = skill
-					continue
-				}
-
-				l.addDiagnostic(Diagnostic{
-					Severity:   DiagnosticSeverityWarning,
-					Code:       "skill_name_collision",
-					Message:    fmt.Sprintf("skill %q from %s was shadowed by %s", skill.Name, skillLocation(skillPath), skillLocation(existing.Path)),
-					SkillName:  skill.Name,
-					Path:       skillLocation(skillPath),
-					Scope:      skill.Scope,
-					ShadowedBy: skillLocation(existing.Path),
-				})
-				continue
-			}
-
-			byName[skill.Name] = len(skills)
-			skills = append(skills, skill)
 		}
 	}
 
@@ -269,6 +212,7 @@ func (l *Loader) Discover(ctx context.Context, startPath string) ([]*Skill, erro
 				skill, err := l.LoadMetadata(ctx, path)
 				if err == nil {
 					skill.Scope = scope
+					assignCollection(startPath, skill)
 					if idx, exists := byName[skill.Name]; exists {
 						existing := skills[idx]
 						if shouldReplaceSkill(existing, skill) {
@@ -475,4 +419,109 @@ func skillLocation(skillPath string) string {
 		return filepath.Join(skillPath, "SKILL.md")
 	}
 	return location
+}
+
+func (l *Loader) walkSkills(ctx context.Context, basePath string, seen map[string]bool, byName map[string]int, skills *[]*Skill) error {
+	absBasePath, err := filepath.Abs(basePath)
+	if err != nil {
+		absBasePath = basePath
+	}
+
+	return filepath.WalkDir(basePath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == basePath {
+				return nil
+			}
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+
+		skillFile := filepath.Join(path, "SKILL.md")
+		if _, err := os.Stat(skillFile); err != nil {
+			return nil
+		}
+
+		absSkillPath, err := filepath.Abs(path)
+		if err != nil {
+			absSkillPath = path
+		}
+		if seen[absSkillPath] {
+			return filepath.SkipDir
+		}
+		seen[absSkillPath] = true
+
+		scope := classifySkillScope(absSkillPath)
+		if !l.isTrusted(scope, absSkillPath) {
+			return filepath.SkipDir
+		}
+
+		skill, err := l.LoadMetadata(ctx, absSkillPath)
+		if err != nil {
+			return filepath.SkipDir
+		}
+		skill.Scope = scope
+		assignCollection(absBasePath, skill)
+
+		if idx, exists := byName[skill.Name]; exists {
+			existing := (*skills)[idx]
+			if shouldReplaceSkill(existing, skill) {
+				l.addDiagnostic(Diagnostic{
+					Severity:   DiagnosticSeverityWarning,
+					Code:       "skill_name_collision",
+					Message:    fmt.Sprintf("skill %q from %s overrides %s due to precedence", skill.Name, skillLocation(absSkillPath), skillLocation(existing.Path)),
+					SkillName:  existing.Name,
+					Path:       skillLocation(existing.Path),
+					Scope:      existing.Scope,
+					ShadowedBy: skillLocation(absSkillPath),
+				})
+				(*skills)[idx] = skill
+				return filepath.SkipDir
+			}
+
+			l.addDiagnostic(Diagnostic{
+				Severity:   DiagnosticSeverityWarning,
+				Code:       "skill_name_collision",
+				Message:    fmt.Sprintf("skill %q from %s was shadowed by %s", skill.Name, skillLocation(absSkillPath), skillLocation(existing.Path)),
+				SkillName:  skill.Name,
+				Path:       skillLocation(absSkillPath),
+				Scope:      skill.Scope,
+				ShadowedBy: skillLocation(existing.Path),
+			})
+			return filepath.SkipDir
+		}
+
+		byName[skill.Name] = len(*skills)
+		*skills = append(*skills, skill)
+		return filepath.SkipDir
+	})
+}
+
+func assignCollection(basePath string, skill *Skill) {
+	if skill == nil || skill.Path == "" || basePath == "" {
+		return
+	}
+
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		absBase = basePath
+	}
+	absSkill, err := filepath.Abs(skill.Path)
+	if err != nil {
+		absSkill = skill.Path
+	}
+
+	rel, err := filepath.Rel(absBase, absSkill)
+	if err != nil || rel == "." {
+		return
+	}
+
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) < 2 {
+		return
+	}
+
+	skill.Collection = parts[0]
+	skill.CollectionPath = filepath.Join(absBase, parts[0])
 }

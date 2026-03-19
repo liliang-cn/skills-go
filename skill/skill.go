@@ -20,10 +20,12 @@ const (
 // Skill represents a complete skill with metadata, content, and resources
 type Skill struct {
 	// Metadata
-	Meta  Meta       `yaml:"frontmatter" json:"meta"`
-	Path  string     `json:"path"`
-	Name  string     `json:"name"`
-	Scope SkillScope `json:"scope,omitempty"`
+	Meta           Meta       `yaml:"frontmatter" json:"meta"`
+	Path           string     `json:"path"`
+	Name           string     `json:"name"`
+	Scope          SkillScope `json:"scope,omitempty"`
+	Collection     string     `json:"collection,omitempty"`
+	CollectionPath string     `json:"collection_path,omitempty"`
 
 	// Content
 	Content string `json:"content"` // SKILL.md content without frontmatter
@@ -36,6 +38,14 @@ type Skill struct {
 	LoadedAt  time.Time `json:"loaded_at"`
 	Version   string    `json:"version,omitempty"`
 	LoadLevel LoadLevel `json:"load_level"`
+}
+
+// Collection groups skills discovered from a shared bundle/source directory.
+type Collection struct {
+	Name  string     `json:"name"`
+	Path  string     `json:"path"`
+	Scope SkillScope `json:"scope,omitempty"`
+	Skills []*Skill  `json:"skills"`
 }
 
 // Meta is the YAML frontmatter of SKILL.md

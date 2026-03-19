@@ -197,6 +197,46 @@ func TestRegistryFindByPrefix(t *testing.T) {
 	}
 }
 
+func TestRegistryListCollections(t *testing.T) {
+	reg := NewRegistry(NewLoader())
+
+	reg.Add(&Skill{
+		Name:           "frontend-design",
+		Path:           "/skills/impeccable/frontend-design",
+		Collection:     "impeccable",
+		CollectionPath: "/skills/impeccable",
+		Scope:          SkillScopeUser,
+		Meta:           Meta{Name: "frontend-design", Description: "Design skill"},
+	})
+	reg.Add(&Skill{
+		Name:           "audit",
+		Path:           "/skills/impeccable/audit",
+		Collection:     "impeccable",
+		CollectionPath: "/skills/impeccable",
+		Scope:          SkillScopeUser,
+		Meta:           Meta{Name: "audit", Description: "Audit skill"},
+	})
+	reg.Add(&Skill{
+		Name: "pptx",
+		Path: "/skills/pptx",
+		Meta: Meta{Name: "pptx", Description: "Standalone skill"},
+	})
+
+	collections := reg.ListCollections()
+	if len(collections) != 1 {
+		t.Fatalf("ListCollections returned %d items, want 1", len(collections))
+	}
+	if collections[0].Name != "impeccable" {
+		t.Fatalf("collection name = %q, want %q", collections[0].Name, "impeccable")
+	}
+	if len(collections[0].Skills) != 2 {
+		t.Fatalf("collection skills = %d, want 2", len(collections[0].Skills))
+	}
+	if collections[0].Skills[0].Name != "audit" || collections[0].Skills[1].Name != "frontend-design" {
+		t.Fatalf("collection skill order = [%s, %s], want [audit, frontend-design]", collections[0].Skills[0].Name, collections[0].Skills[1].Name)
+	}
+}
+
 func TestRegistryResolve(t *testing.T) {
 	reg := NewRegistry(NewLoader())
 
