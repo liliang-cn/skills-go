@@ -243,8 +243,7 @@ func TestRegistryResolve(t *testing.T) {
 	skills := []*Skill{
 		{Name: "commit", Path: "/path/commit", Meta: Meta{Name: "commit", Description: "Help create git commits"}},
 		{Name: "test", Path: "/path/test", Meta: Meta{Name: "test", Description: "Run tests"}},
-		{Name: "deploy", Path: "/path/deploy", Meta: Meta{Name: "deploy", Description: "Deploy to production", DisableModelInvocation: true},
-		},
+		{Name: "deploy", Path: "/path/deploy", Meta: Meta{Name: "deploy", Description: "Deploy to production", DisableModelInvocation: true}},
 	}
 
 	for _, s := range skills {
@@ -312,6 +311,57 @@ func TestRegistryResolve(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRegistryResolveForModelUsesWhenToUseAndPaths(t *testing.T) {
+	reg := NewRegistry(NewLoader())
+
+	reg.Add(&Skill{
+		Name:        "docs-review",
+		Description: "Review documentation",
+		WhenToUse:   "Use when editing markdown docs or README files.",
+		Paths:       []string{"docs/*.md", "README.md"},
+		Meta: Meta{
+			Name:        "docs-review",
+			Description: "Review documentation",
+			WhenToUse:   "Use when editing markdown docs or README files.",
+			Paths:       []string{"docs/*.md", "README.md"},
+		},
+	})
+	reg.Add(&Skill{
+		Name:        "backend-audit",
+		Description: "Audit backend services",
+		WhenToUse:   "Use when modifying Go services.",
+		Meta: Meta{
+			Name:        "backend-audit",
+			Description: "Audit backend services",
+			WhenToUse:   "Use when modifying Go services.",
+		},
+	})
+
+	results, err := reg.ResolveForModel(context.Background(), "please improve the docs writing", []string{"docs/intro.md"})
+	if err != nil {
+		t.Fatalf("ResolveForModel() error = %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected a matching skill")
+	}
+	if results[0].Name != "docs-review" {
+		t.Fatalf("expected docs-review first, got %q", results[0].Name)
+	}
+}
+
+func TestSkillMatchesAnyPath(t *testing.T) {
+	skill := &Skill{Paths: []string{"docs/*.md", "README.md"}}
+	if !skill.MatchesAnyPath([]string{"docs/guide.md"}) {
+		t.Fatal("expected docs/*.md to match docs/guide.md")
+	}
+	if !skill.MatchesAnyPath([]string{"README.md"}) {
+		t.Fatal("expected README.md to match")
+	}
+	if skill.MatchesAnyPath([]string{"src/main.go"}) {
+		t.Fatal("expected src/main.go not to match docs-only skill")
 	}
 }
 

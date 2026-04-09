@@ -120,11 +120,14 @@ func (l *Loader) LoadWithLevel(ctx context.Context, skillPath string, level Load
 	}
 
 	skill := &Skill{
-		Meta:     *meta,
-		Path:     skillPath,
-		Name:     meta.Name,
-		Scope:    classifySkillScope(skillPath),
-		LoadedAt: time.Now(),
+		Meta:        *meta,
+		Path:        skillPath,
+		Name:        meta.Name,
+		Description: meta.Description,
+		WhenToUse:   meta.WhenToUse,
+		Paths:       append([]string(nil), meta.Paths...),
+		Scope:       classifySkillScope(skillPath),
+		LoadedAt:    time.Now(),
 	}
 
 	if level >= LoadLevelContent {

@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 )
 
@@ -23,6 +24,9 @@ type Skill struct {
 	Meta           Meta       `yaml:"frontmatter" json:"meta"`
 	Path           string     `json:"path"`
 	Name           string     `json:"name"`
+	Description    string     `json:"description,omitempty"`
+	WhenToUse      string     `json:"when_to_use,omitempty"`
+	Paths          []string   `json:"paths,omitempty"`
 	Scope          SkillScope `json:"scope,omitempty"`
 	Collection     string     `json:"collection,omitempty"`
 	CollectionPath string     `json:"collection_path,omitempty"`
@@ -42,16 +46,18 @@ type Skill struct {
 
 // Collection groups skills discovered from a shared bundle/source directory.
 type Collection struct {
-	Name  string     `json:"name"`
-	Path  string     `json:"path"`
-	Scope SkillScope `json:"scope,omitempty"`
-	Skills []*Skill  `json:"skills"`
+	Name   string     `json:"name"`
+	Path   string     `json:"path"`
+	Scope  SkillScope `json:"scope,omitempty"`
+	Skills []*Skill   `json:"skills"`
 }
 
 // Meta is the YAML frontmatter of SKILL.md
 type Meta struct {
 	Name                   string                 `yaml:"name,omitempty"`
 	Description            string                 `yaml:"description,omitempty"`
+	WhenToUse              string                 `yaml:"when_to_use,omitempty"`
+	Paths                  []string               `yaml:"paths,omitempty"`
 	ArgumentHint           string                 `yaml:"argument-hint,omitempty"`
 	DisableModelInvocation bool                   `yaml:"disable-model-invocation,omitempty"`
 	UserInvocable          *bool                  `yaml:"user-invocable,omitempty"`
@@ -257,6 +263,30 @@ func (s *Skill) IsUserInvocable() bool {
 // IsModelInvocable returns whether the skill can be invoked by the model
 func (s *Skill) IsModelInvocable() bool {
 	return !s.Meta.DisableModelInvocation
+}
+
+// MatchesAnyPath reports whether any touched path activates this conditional skill.
+// Skills without path constraints are always considered active.
+func (s *Skill) MatchesAnyPath(touchedPaths []string) bool {
+	if s == nil || len(s.Paths) == 0 {
+		return true
+	}
+	if len(touchedPaths) == 0 {
+		return false
+	}
+	for _, pattern := range s.Paths {
+		pattern = filepath.Clean(pattern)
+		for _, touched := range touchedPaths {
+			touched = filepath.Clean(touched)
+			if ok, err := filepath.Match(pattern, touched); err == nil && ok {
+				return true
+			}
+			if ok, err := filepath.Match(pattern, filepath.Base(touched)); err == nil && ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ShouldFork returns whether the skill should run in a forked context

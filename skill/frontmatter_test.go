@@ -98,6 +98,21 @@ Content.`,
 			expectedContent: "Content.",
 		},
 		{
+			name: "frontmatter with when_to_use and paths",
+			input: `---
+name: test
+description: Test skill
+when_to_use: Use when editing markdown docs
+paths:
+  - docs/*.md
+  - README.md
+---
+Content.`,
+			expectedName:    "test",
+			expectedDesc:    "Test skill",
+			expectedContent: "Content.",
+		},
+		{
 			name: "frontmatter with PreToolUse hooks",
 			input: `---
 name: test
@@ -146,6 +161,15 @@ name: empty-skill
 
 			if meta.Description != tt.expectedDesc {
 				t.Errorf("Description = %q, want %q", meta.Description, tt.expectedDesc)
+			}
+
+			if tt.name == "frontmatter with when_to_use and paths" {
+				if meta.WhenToUse != "Use when editing markdown docs" {
+					t.Errorf("WhenToUse = %q", meta.WhenToUse)
+				}
+				if len(meta.Paths) != 2 || meta.Paths[0] != "docs/*.md" || meta.Paths[1] != "README.md" {
+					t.Errorf("Paths = %#v", meta.Paths)
+				}
 			}
 
 			if content != tt.expectedContent {

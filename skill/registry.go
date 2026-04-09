@@ -115,16 +115,61 @@ func (r *Registry) Resolve(ctx context.Context, input string) ([]*Skill, error) 
 	return relevant, nil
 }
 
+// ResolveForModel finds model-invocable skills relevant to the current task.
+// It uses name, description, when_to_use, and optional path constraints.
+func (r *Registry) ResolveForModel(ctx context.Context, input string, touchedPaths []string) ([]*Skill, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	inputLower := strings.ToLower(strings.TrimSpace(input))
+	inputWords := extractWords(inputLower)
+
+	type scoredSkill struct {
+		skill *Skill
+		score int
+	}
+	scored := make([]scoredSkill, 0, len(r.byName))
+
+	for _, s := range r.byName {
+		if !s.IsModelInvocable() {
+			continue
+		}
+		if !s.MatchesAnyPath(touchedPaths) {
+			continue
+		}
+
+		score := scoreSkillMatch(inputLower, inputWords, s)
+		if score <= 0 {
+			continue
+		}
+		scored = append(scored, scoredSkill{skill: s, score: score})
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].skill.Name < scored[j].skill.Name
+		}
+		return scored[i].score > scored[j].score
+	})
+
+	result := make([]*Skill, 0, len(scored))
+	for _, item := range scored {
+		result = append(result, item.skill)
+	}
+	return result, nil
+}
+
 // matches checks if a skill matches the input
 func (r *Registry) matches(input string, inputWords []string, s *Skill) bool {
 	desc := strings.ToLower(s.Meta.Description)
+	whenToUse := strings.ToLower(s.Meta.WhenToUse)
 
 	// Check for exact phrase matches
 	for _, word := range inputWords {
 		if len(word) < 4 {
 			continue // Skip short words
 		}
-		if strings.Contains(desc, word) {
+		if strings.Contains(desc, word) || strings.Contains(whenToUse, word) {
 			return true
 		}
 	}
@@ -137,10 +182,36 @@ func (r *Registry) matches(input string, inputWords []string, s *Skill) bool {
 	return false
 }
 
+func scoreSkillMatch(input string, inputWords []string, s *Skill) int {
+	score := 0
+	name := strings.ToLower(s.Name)
+	desc := strings.ToLower(s.Meta.Description)
+	whenToUse := strings.ToLower(s.Meta.WhenToUse)
+
+	if strings.Contains(input, name) {
+		score += 80
+	}
+	for _, word := range inputWords {
+		if len(word) < 3 {
+			continue
+		}
+		if strings.Contains(name, word) {
+			score += 30
+		}
+		if strings.Contains(whenToUse, word) {
+			score += 20
+		}
+		if strings.Contains(desc, word) {
+			score += 10
+		}
+	}
+	return score
+}
+
 // extractWords extracts words from input for matching
 func extractWords(input string) []string {
-	// Simple word extraction
-	words := strings.Fields(input)
+	replacer := strings.NewReplacer("/", " ", "\\", " ", ".", " ", "-", " ", "_", " ", ":", " ")
+	words := strings.Fields(replacer.Replace(input))
 	var result []string
 
 	for _, w := range words {
@@ -229,7 +300,8 @@ func (r *Registry) RegisterFunction(name, description string, handler HandlerFun
 
 	// Create a synthetic skill for the handler
 	skill := &Skill{
-		Name: name,
+		Name:        name,
+		Description: description,
 		Meta: Meta{
 			Name:        name,
 			Description: description,
