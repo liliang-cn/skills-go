@@ -96,7 +96,7 @@ func (r *Registry) Resolve(ctx context.Context, input string) ([]*Skill, error) 
 	defer r.mu.RUnlock()
 
 	input = strings.ToLower(input)
-	inputWords := extractWords(input)
+	inputWords := tokenize(input)
 
 	var relevant []*Skill
 
@@ -115,114 +115,57 @@ func (r *Registry) Resolve(ctx context.Context, input string) ([]*Skill, error) 
 	return relevant, nil
 }
 
-// ResolveForModel finds model-invocable skills relevant to the current task.
-// It uses name, description, when_to_use, and optional path constraints.
+// ResolveForModel finds model-invocable skills relevant to the current task,
+// best match first. It uses name, description, when_to_use, and optional path
+// constraints.
+//
+// It applies no relevance floor, so it returns everything with any overlap at
+// all — the long-standing behaviour, and why a caller should prefer
+// ResolveForModelScored, which reports how good each match actually is and can
+// drop the weak ones. See relevance.go for what "good" means here.
 func (r *Registry) ResolveForModel(ctx context.Context, input string, touchedPaths []string) ([]*Skill, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	inputLower := strings.ToLower(strings.TrimSpace(input))
-	inputWords := extractWords(inputLower)
-
-	type scoredSkill struct {
-		skill *Skill
-		score int
+	scored, err := r.ResolveForModelScored(ctx, input, ResolveOptions{TouchedPaths: touchedPaths})
+	if err != nil {
+		return nil, err
 	}
-	scored := make([]scoredSkill, 0, len(r.byName))
-
-	for _, s := range r.byName {
-		if !s.IsModelInvocable() {
-			continue
-		}
-		if !s.MatchesAnyPath(touchedPaths) {
-			continue
-		}
-
-		score := scoreSkillMatch(inputLower, inputWords, s)
-		if score <= 0 {
-			continue
-		}
-		scored = append(scored, scoredSkill{skill: s, score: score})
-	}
-
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].skill.Name < scored[j].skill.Name
-		}
-		return scored[i].score > scored[j].score
-	})
-
 	result := make([]*Skill, 0, len(scored))
 	for _, item := range scored {
-		result = append(result, item.skill)
+		result = append(result, item.Skill)
 	}
 	return result, nil
 }
 
-// matches checks if a skill matches the input
-func (r *Registry) matches(input string, inputWords []string, s *Skill) bool {
-	desc := strings.ToLower(s.Meta.Description)
-	whenToUse := strings.ToLower(s.Meta.WhenToUse)
+// ResolveForModelScored is ResolveForModel with the relevance score attached
+// and a floor the caller chooses.
+//
+// The score is in [0,1] and answers "how much of what the user asked for does
+// this skill account for?". Pass opts.MinScore (DefaultMinScore is a calibrated
+// starting point) to keep incidental single-word overlaps out of the result
+// entirely, rather than receiving them ranked last and having to decide what to
+// do about them.
+func (r *Registry) ResolveForModelScored(ctx context.Context, input string, opts ResolveOptions) ([]ScoredSkill, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.resolveScored(input, opts), nil
+}
 
-	// Check for exact phrase matches
+// matches checks if a skill matches the input.
+//
+// Shares the tokenizer with the relevance scorer, so it agrees with it about
+// what a word is. It used to test each input word as a substring, which meant
+// "art" matched "start" and "cat" matched "category"; a whole-word overlap is
+// the least this should require.
+func (r *Registry) matches(input string, inputWords []string, s *Skill) bool {
+	if name := strings.ToLower(strings.TrimSpace(s.Name)); name != "" && strings.Contains(input, name) {
+		return true
+	}
+	terms := newSkillTerms(s)
 	for _, word := range inputWords {
-		if len(word) < 4 {
-			continue // Skip short words
-		}
-		if strings.Contains(desc, word) || strings.Contains(whenToUse, word) {
+		if _, ok := terms.byTerm[word]; ok {
 			return true
 		}
 	}
-
-	// Check for skill name match
-	if strings.Contains(input, s.Name) {
-		return true
-	}
-
 	return false
-}
-
-func scoreSkillMatch(input string, inputWords []string, s *Skill) int {
-	score := 0
-	name := strings.ToLower(s.Name)
-	desc := strings.ToLower(s.Meta.Description)
-	whenToUse := strings.ToLower(s.Meta.WhenToUse)
-
-	if strings.Contains(input, name) {
-		score += 80
-	}
-	for _, word := range inputWords {
-		if len(word) < 3 {
-			continue
-		}
-		if strings.Contains(name, word) {
-			score += 30
-		}
-		if strings.Contains(whenToUse, word) {
-			score += 20
-		}
-		if strings.Contains(desc, word) {
-			score += 10
-		}
-	}
-	return score
-}
-
-// extractWords extracts words from input for matching
-func extractWords(input string) []string {
-	replacer := strings.NewReplacer("/", " ", "\\", " ", ".", " ", "-", " ", "_", " ", ":", " ")
-	words := strings.Fields(replacer.Replace(input))
-	var result []string
-
-	for _, w := range words {
-		// Remove punctuation
-		w = strings.Trim(w, ".,!?;:\"'")
-		if len(w) >= 4 {
-			result = append(result, strings.ToLower(w))
-		}
-	}
-
-	return result
 }
 
 // List returns all skill metadata
