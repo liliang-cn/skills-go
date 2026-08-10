@@ -35,8 +35,32 @@ type Loader struct {
 // LoaderOption configures a Loader
 type LoaderOption func(*Loader)
 
-// WithPaths adds search paths for skills
+// WithPaths sets the search paths for skills, replacing the defaults.
+//
+// It used to append to DefaultPaths() instead, so a caller who named its paths
+// explicitly still silently loaded ~/.agents/skills as well. That is surprising
+// on its own terms, and it made isolation impossible: a test that builds a
+// four-skill fixture directory was really running against that fixture plus
+// whatever the developer happened to have installed. One did, and passed on
+// every machine that had skills and failed in CI, which had none.
+//
+// Use WithAdditionalPaths to search the defaults as well.
+//
+// Passing no paths leaves the loader as it was. "Search nowhere" is not a thing
+// a caller means — it is what a caller with nothing configured looks like, and
+// those callers want the defaults.
 func WithPaths(paths ...string) LoaderOption {
+	return func(l *Loader) {
+		if len(paths) == 0 {
+			return
+		}
+		l.paths = append([]string(nil), paths...)
+	}
+}
+
+// WithAdditionalPaths adds search paths on top of whatever the loader already
+// has, which for a fresh loader is DefaultPaths().
+func WithAdditionalPaths(paths ...string) LoaderOption {
 	return func(l *Loader) {
 		l.paths = append(l.paths, paths...)
 	}
