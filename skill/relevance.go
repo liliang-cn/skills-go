@@ -188,49 +188,53 @@ func buildCorpus(skills []*Skill) *corpus {
 			df[term]++
 		}
 	}
-	n := float64(len(skills))
 	for term, count := range df {
-		// Smoothed IDF, always positive: a term every skill shares still counts
-		// for a little, it just cannot carry a match on its own.
-		c.idf[term] = math.Log(1 + n/(1+float64(count)))
+		c.idf[term] = idfForDF(count, len(skills))
 	}
 	return c
 }
 
-// idfOf returns the weight of a query term. A term no skill mentions is scored
-// as maximally distinguishing, so that a query full of unknown words is not
-// quietly treated as if it matched everything.
+// idfOf returns the weight of a query term.
+//
+// A term no skill mentions is treated as maximally distinguishing — and the
+// most distinguishing a term can be is one that exactly one skill mentions, so
+// that is the value it gets. Scoring it any higher (log(1+N), say) makes it
+// worth more than any real term, and by an amount that varies with the size of
+// the registry: with four skills such a term outweighs a genuine rare match by
+// half again, with twenty by a quarter. Every score then drifts with how many
+// skills happen to be installed, which is exactly what a floor cannot tolerate.
 func (c *corpus) idfOf(term string) float64 {
 	if v, ok := c.idf[term]; ok {
 		return v
 	}
-	return math.Log(1 + float64(len(c.terms)))
+	return idfForDF(1, len(c.terms))
 }
 
-// commonTermDocRatio is the share of skills a term may appear in before it
-// stops counting as evidence FOR any one of them.
-//
-// "use", "file", "agent", "code" turn up in most skill descriptions. In a long
-// question they are harmless — they are a small part of the total. In a short
-// one they are most of it, and a skill could be selected almost entirely on the
-// word "use". Such a term still counts toward the total (the user did say it,
-// and nothing explained it), it just cannot be what selects a skill.
-//
-// This is the same idea as a stopword list, except derived from the skills that
-// are actually installed rather than written down in advance: in a registry of
-// design skills "design" is uninformative, in a registry of one it is decisive.
-const commonTermDocRatio = 0.5
+// idfForDF is the smoothed inverse document frequency of a term appearing in
+// df of n skills. Always positive: a term every skill shares still counts for
+// something, it just cannot carry a match on its own.
+func idfForDF(df, n int) float64 {
+	return math.Log(1 + float64(n)/(1+float64(df)))
+}
 
-// minSkillsForCommonTerms is the corpus size below which the "most skills say
-// this" statistic means nothing and is not applied.
-const minSkillsForCommonTerms = 4
+// rarityExponent sharpens the contrast between terms that distinguish a skill
+// and terms that most skills share.
+//
+// "use", "file", "agent", "code" turn up in most skill descriptions. Their IDF
+// is already lower, but only by a factor of about three across the whole range,
+// and in a four-word question that is not enough — a skill could be selected
+// largely on the word "use". Squaring the weight widens that factor to about
+// nine, which is enough, and does it as a smooth curve rather than a threshold:
+// there is no point at which a term abruptly stops counting, and no corpus size
+// at which the rule switches on.
+const rarityExponent = 2
 
-// distinguishes reports whether a term is specific enough to select a skill.
-func (c *corpus) distinguishes(term string) bool {
-	if len(c.terms) < minSkillsForCommonTerms {
-		return true
-	}
-	return float64(c.df[term]) <= commonTermDocRatio*float64(len(c.terms))
+// weightOf is a term's contribution, sharpened by rarityExponent. Used
+// identically in the matched total and the possible total, so the score stays a
+// proportion.
+func (c *corpus) weightOf(term string) float64 {
+	idf := c.idfOf(term)
+	return math.Pow(idf, rarityExponent)
 }
 
 // score returns how much of the query this skill accounts for, in [0,1].
@@ -253,11 +257,11 @@ func (c *corpus) score(s *Skill, query string, queryTerms []string, touchedPaths
 			continue
 		}
 		seen[term] = true
-		idf := c.idfOf(term)
+		w := c.weightOf(term)
 		// The most a term could contribute if it appeared in the strongest field.
-		total += fieldWeightName * idf
-		if weight, ok := st.byTerm[term]; ok && c.distinguishes(term) {
-			matched += weight * idf
+		total += fieldWeightName * w
+		if fieldWeight, ok := st.byTerm[term]; ok {
+			matched += fieldWeight * w
 		}
 	}
 	if total == 0 {

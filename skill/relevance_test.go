@@ -33,6 +33,21 @@ func realisticRegistry() *Registry {
 	return reg
 }
 
+// smallRegistry is the four-skill fixture a caller building an isolated test
+// corpus would write — the size at which the scoring used to fall apart.
+func smallRegistry() *Registry {
+	reg := NewRegistry(NewLoader())
+	add := func(name, desc string) {
+		reg.Add(&Skill{Name: name, Description: desc, Meta: Meta{Name: name, Description: desc}})
+	}
+	add("design-taste-frontend",
+		"Anti-slop frontend skill for landing pages, portfolios, and redesigns. Real design systems when applicable, audit-first on redesigns, strict pre-flight check.")
+	add("cortexdb", "Use CortexDB for vector search, hybrid search, knowledge graphs, and RAG.")
+	add("golang-pro", "Implements concurrent Go patterns using goroutines and channels, designs microservices with gRPC or REST.")
+	add("brandkit", "Premium brand-kit image generation for brand-guidelines boards, logo systems and identity decks.")
+	return reg
+}
+
 func topScore(t *testing.T, reg *Registry, query string) (string, float64) {
 	t.Helper()
 	res, err := reg.ResolveForModelScored(context.Background(), query, ResolveOptions{})
@@ -218,5 +233,79 @@ func TestResolveOptionsFloorAndLimit(t *testing.T) {
 	}
 	if len(legacy) > 0 && legacy[0].Name != all[0].Skill.Name {
 		t.Errorf("ranking diverged: %q vs %q", legacy[0].Name, all[0].Skill.Name)
+	}
+}
+
+// The floor has to mean the same thing whatever the registry happens to hold.
+//
+// It did not. An unmatched query term used to be weighted log(1+N) while a
+// matched rare one was weighted log(1+N/2), and the gap between those two
+// closes as N grows — so every score drifted with how many skills were
+// installed. Calibrated on nineteen, the same genuine design request scored
+// 0.153; on four it scored 0.096 and fell through a floor of 0.10. That is how
+// a test that built its own four-skill corpus passed on a developer's machine,
+// where it was silently also loading nineteen real ones, and failed in CI.
+//
+// Both corpus sizes are pinned here. If a scoring change pulls them apart
+// again, this fails before anyone's CI does.
+func TestScoringHoldsAcrossCorpusSizes(t *testing.T) {
+	corpora := map[string]*Registry{
+		"four skills": smallRegistry(),
+		"six skills":  realisticRegistry(),
+	}
+
+	relevant := map[string]string{
+		"I need a landing page for my startup, make the design look premium": "design-taste-frontend",
+		"build me a brand kit with a logo system":                            "brandkit",
+		"write a concurrent Go service with goroutines":                      "golang-pro",
+	}
+	irrelevant := []string{
+		"Check the weather in Chicago. If it's sunny, remind me to hang the laundry outside; otherwise remind me to use the dryer.",
+		"My test scores are 88, 92, 79, and 85. Calculate the average, and if it's below 85, remind me to study harder.",
+	}
+
+	for label, reg := range corpora {
+		for q, want := range relevant {
+			name, score := topScore(t, reg, q)
+			if name != want {
+				t.Errorf("%s: expected %s for %q, got %s (%.3f)", label, want, q, name, score)
+				continue
+			}
+			if score < DefaultMinScore {
+				t.Errorf("%s: genuine match %s scored %.3f, under the floor %.2f — the floor is corpus-dependent again",
+					label, name, score, DefaultMinScore)
+			}
+		}
+		for _, q := range irrelevant {
+			name, score := topScore(t, reg, q)
+			if score >= DefaultMinScore {
+				t.Errorf("%s: unrelated question matched %s at %.3f (floor %.2f): %.50s",
+					label, name, score, DefaultMinScore, q)
+			}
+		}
+	}
+}
+
+// A caller that names its search paths gets those paths and nothing else.
+// Appending to the defaults meant no caller could ever build an isolated
+// corpus, which is what let a developer's ~/.agents/skills into a test.
+func TestWithPathsReplacesTheDefaults(t *testing.T) {
+	loader := NewLoader(WithPaths("/tmp/only-this-one"))
+	if len(loader.paths) != 1 || loader.paths[0] != "/tmp/only-this-one" {
+		t.Fatalf("WithPaths should replace the defaults, got %v", loader.paths)
+	}
+
+	// No paths at all is what a caller with nothing configured looks like, not
+	// a request to search nowhere.
+	if none := NewLoader(WithPaths()); len(none.paths) != len(DefaultPaths()) {
+		t.Fatalf("WithPaths() with no arguments should leave the defaults, got %v", none.paths)
+	}
+
+	extra := NewLoader(WithAdditionalPaths("/tmp/extra"))
+	if len(extra.paths) != len(DefaultPaths())+1 {
+		t.Fatalf("WithAdditionalPaths should keep the defaults, got %v", extra.paths)
+	}
+	if extra.paths[len(extra.paths)-1] != "/tmp/extra" {
+		t.Fatalf("WithAdditionalPaths should append, got %v", extra.paths)
 	}
 }
