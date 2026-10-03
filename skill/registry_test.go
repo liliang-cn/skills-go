@@ -2,6 +2,8 @@ package skill
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -433,5 +435,46 @@ func TestRegistryLoad(t *testing.T) {
 	if err != nil {
 		// It's ok if testdata doesn't exist, just verify the mechanism works
 		t.Logf("Load returned error (expected if testdata missing): %v", err)
+	}
+}
+
+// A reload drops a skill whose folder is gone, and keeps the rest — those
+// still on disk and those added in code.
+func TestRegistryReloadDropsRemovedSkills(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nname: " + name + "\ndescription: a test skill called " + name + "\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(p, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("keep")
+	write("drop")
+	reg := NewRegistry(NewLoader(WithPaths(dir)))
+	if err := reg.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reg.Add(&Skill{Name: "in-code", Path: "/nowhere/in-code", Meta: Meta{Name: "in-code"}})
+	if reg.Count() != 3 {
+		t.Fatalf("count after first load = %d, want 3 (%v)", reg.Count(), reg.Names())
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "drop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Get("drop"); err == nil {
+		t.Fatal("a skill whose folder was removed is still registered after a reload")
+	}
+	for _, name := range []string{"keep", "in-code"} {
+		if _, err := reg.Get(name); err != nil {
+			t.Fatalf("%s was dropped by the reload: %v", name, err)
+		}
 	}
 }

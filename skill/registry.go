@@ -13,6 +13,9 @@ type Registry struct {
 	skills   map[string]*Skill      // by path
 	byName   map[string]*Skill      // by name
 	handlers map[string]HandlerFunc // handler functions by name
+	// fromDisk are the paths the last Load found, so the next one can drop
+	// those that are gone without touching skills added in code.
+	fromDisk map[string]bool
 	mu       sync.RWMutex
 }
 
@@ -23,10 +26,14 @@ func NewRegistry(loader *Loader) *Registry {
 		skills:   make(map[string]*Skill),
 		byName:   make(map[string]*Skill),
 		handlers: make(map[string]HandlerFunc),
+		fromDisk: make(map[string]bool),
 	}
 }
 
-// Load loads all skills from configured paths
+// Load loads all skills from configured paths. Called again, it reloads: a
+// skill whose folder has gone since the last Load is dropped, so removing a
+// skill takes effect without a restart. Skills added with Add or registered
+// as handlers are not affected.
 func (r *Registry) Load(ctx context.Context) error {
 	skills, err := r.loader.LoadAll(ctx)
 	if err != nil {
@@ -36,10 +43,26 @@ func (r *Registry) Load(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	found := make(map[string]bool, len(skills))
+	for _, s := range skills {
+		found[s.Path] = true
+	}
+	for path := range r.fromDisk {
+		if found[path] {
+			continue
+		}
+		if old := r.skills[path]; old != nil {
+			if r.byName[old.Name] == old {
+				delete(r.byName, old.Name)
+			}
+			delete(r.skills, path)
+		}
+	}
 	for _, s := range skills {
 		r.skills[s.Path] = s
 		r.byName[s.Name] = s
 	}
+	r.fromDisk = found
 
 	return nil
 }
